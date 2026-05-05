@@ -1,0 +1,26 @@
+{
+	"servers": {
+		"mcp-hello-world": {
+			"type": "stdio",
+			"command": "python",
+			"args": [
+				"${workspaceFolder}/.scripts/mcp_hello_world.py"
+			]
+		},
+		"mcp-redmine": {
+			"type": "stdio",
+			"command": "python",
+			"args": [
+				"${workspaceFolder}/.scripts/mcp_redmine.py"
+			]
+		},
+		"mcp-svn": {
+			"type": "stdio",
+			"command": "python",
+			"args": [
+				"${workspaceFolder}/.scripts/mcp_svn.py"
+			]
+		}
+	},
+	"inputs": []
+}
