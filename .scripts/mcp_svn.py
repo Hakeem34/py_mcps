@@ -33,6 +33,9 @@ RE_LIST_LINE_FILE = re.compile(r"^\s*(\d+)\s+(\S+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S
 
 g_repo_url = ""
 g_working_url = ""
+g_working_root = ""
+g_username = None
+g_password = None
 g_get_log_stats = LogStats()
 g_search_log_stats = LogStats()
 
@@ -102,6 +105,8 @@ def run_command(command: str) -> str:
     コマンドを実行して、その出力を返します。
     """
     try:
+        if command.startswith("svn ") and g_username is not None and g_password is not None:
+            command += f" --username {g_username} --password {g_password} --non-interactive --trust-server-cert"
         result = subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False)
         return decode_raw_output(result.stdout)
     except subprocess.CalledProcessError as e:
@@ -114,6 +119,8 @@ def try_command(command: str) -> str:
     コマンドを実行して、その終了コードのみを返します。
     """
     try:
+        if command.startswith("svn ") and g_username is not None and g_password is not None:
+            command += f" --username {g_username} --password {g_password} --non-interactive --trust-server-cert"
         result = subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False)
         return result.returncode
     except subprocess.CalledProcessError as e:
@@ -163,6 +170,7 @@ def get_repo_url_internal() -> str:
     """
     global g_repo_url
     global g_working_url
+    global g_working_root
     svn_info = run_command("svn info")
     # svn infoの出力からリポジトリURLを抽出
     for line in svn_info.split('\n'):
@@ -170,8 +178,10 @@ def get_repo_url_internal() -> str:
             g_working_url = line.split("URL:")[1].strip()
         elif line.startswith("Repository Root:"):
             g_repo_url = line.split("Repository Root:")[1].strip()
+        elif line.startswith("Working Copy Root Path:"):
+            g_working_root = line.split("Working Copy Root Path:")[1].strip()
 
-    print(f"Repository URL: {g_repo_url}", file=sys.stderr)
+    print(f"Repository URL: {g_repo_url}, Working Copy Root Path: {g_working_root}, Working URL: {g_working_url}", file=sys.stderr)
     return g_repo_url
 
 def get_svn_log_internal(path: str, optional_args: str = "") -> str:
@@ -186,8 +196,9 @@ def convert_target_path(path: str) -> str:
     """
     1.作業コピーのURLを付加した完全なURLに変換します。
     2.1が存在しない場合は、リポジトリからの相対パスを完全なURLに変換します。
-    3.1,2の両方が存在しない場合は、ローカルファイルシステム上の相対パスとして扱います。
-    いずれも存在しない場合はNoneを返します。
+    3.URLが直接指定されている場合は、そのまま返します
+    4.いずれも存在しない場合は、ローカルファイルシステム上の相対パスとして扱います。
+    ローカルファイルも存在しない場合はNoneを返します。
     """
     repository_url = g_working_url + "/" + path
 #   print(f"Trying working URL: {repository_url}", file=sys.stderr)
@@ -198,6 +209,9 @@ def convert_target_path(path: str) -> str:
 #   print(f"Trying repository URL: {repository_url}", file=sys.stderr)
     if try_command(f"svn info {repository_url}") == 0:
         return repository_url
+
+    if try_command(f"svn info {path}") == 0:
+        return path
 
     if os.path.exists(path):
         return path
@@ -370,7 +384,7 @@ def blame_svn_file(target_path: str, revision: str = "HEAD", start_line: int = 1
     """
     path = convert_target_path(target_path)
     print(f"Getting SVN blame for: {target_path} at revision: {revision}, start_line: {start_line}, end_line: {end_line}", file=sys.stderr)
-    text = run_command(f"svn blame {path} -r {revision}")
+    text = run_command(f"svn blame {path}@{revision}")
     if start_line > 0:
         start = max(0, start_line - 1)
     else:
@@ -391,7 +405,7 @@ def cat_svn_file(target_path: str, revision: str = "HEAD", start_line: int = 1, 
     """
     path = convert_target_path(target_path)
     print(f"Getting SVN file content for: {target_path} at revision: {revision} start_line: {start_line} end_line: {end_line}", file=sys.stderr)
-    text = run_command(f"svn cat {path} -r {revision}")
+    text = run_command(f"svn cat {path}@{revision}")
     if start_line > 0:
         start = max(0, start_line - 1)
     else:
@@ -420,7 +434,7 @@ def export_svn_file(target_path: str, revision: str = "HEAD", output_path: str =
 
     print(f"Exporting SVN file: {target_path} at revision: {revision} to output path: {output_path}({os.path.dirname(output_path)})", file=sys.stderr)
     os.makedirs(os.path.dirname(output_path), exist_ok=True) if output_path else None
-    result = run_command(f"svn export {path} -r {revision} {output_path}")
+    result = run_command(f"svn export {path}@{revision} {output_path}")
     return result
 
 @mcp.tool()
@@ -430,7 +444,7 @@ def get_svn_diff_by_revision(target_path: str, revision1: str, revision2: str) -
     """
     path = convert_target_path(target_path)
     print(f"Getting SVN diff for: {target_path} between revisions: {revision1} and {revision2}", file=sys.stderr)
-    return run_command(f"svn diff -r {revision1}:{revision2} {path}")
+    return run_command(f"svn diff {path}@{revision1} {path}@{revision2}")
 
 @mcp.tool()
 def get_svn_diff_by_url(target_path1: str, target_path2: str, revision1="HEAD", revision2="HEAD") -> str:
@@ -439,8 +453,17 @@ def get_svn_diff_by_url(target_path1: str, target_path2: str, revision1="HEAD", 
     """
     path1 = convert_target_path(target_path1)
     path2 = convert_target_path(target_path2)
-    print(f"Getting SVN diff for: -r {revision1} {path1} -r {revision2} {path2}", file=sys.stderr)
-    return run_command(f"svn diff -r {revision1} {path1} -r {revision2} {path2}")
+    print(f"Getting SVN diff for: {path1}@{revision1} {path2}@{revision2}", file=sys.stderr)
+    return run_command(f"svn diff {path1}@{revision1} {path2}@{revision2}")
+
+@mcp.tool()
+def get_svn_diff(target_path: str) -> str:
+    """
+    指定されたパスのwork/baseの差分を取得します。
+    """
+    path = convert_target_path(target_path)
+    print(f"Getting SVN diff for: {path}", file=sys.stderr)
+    return run_command(f"svn diff {path}")
 
 @mcp.tool()
 def get_svn_commit_history(target_path: str) -> str:
@@ -514,6 +537,13 @@ def get_svn_logs_continue() -> str:
     update_log_stats(g_get_log_stats, text)
     return text
 
+@mcp.tool()
+def get_svn_status() -> str:
+    """
+    SVN作業コピーのステータスを取得して返します
+    """
+    print(f"Getting SVN status for: {g_working_root}", file=sys.stderr)
+    return run_command(f"svn status {g_working_root}")
 
 @mcp.tool()
 def search_svn_logs(target_path: str, keyword: str, regex: bool = False, limit: int = 10, revision1: str = "HEAD", revision2: str = "1") -> str:
@@ -635,9 +665,37 @@ def test_calls():
 #   print(f"SVN logs continue4:\n{result}", file=sys.stderr)
 #   result = get_svn_logs_continue()
 #   print(f"SVN logs continue5:\n{result}", file=sys.stderr)
+
+    result = get_svn_status()
+    print(f"SVN status:\n{result}", file=sys.stderr)
+    return
+
+def read_credentials():
+    """
+    SVNの認証情報を読み取ります。
+    """
+    global g_username
+    global g_password
+
+    path = os.path.abspath(__file__)
+    path = path.replace(os.path.basename(path), "credentials.txt")
+    if not os.path.exists(path):
+        print(f"Credentials file not found", file=sys.stderr)
+        return
+
+    with open(path, "r") as f:
+        lines = f.readlines()
+        for line in lines:
+            if match := re.match(r"svn_user\s*:\s*(\S+)", line):
+                g_username = match.group(1)
+            elif match := re.match(r"svn_password\s*:\s*(\S+)", line):
+                g_password = match.group(1)
+
+    print(f"Read credentials: username={g_username}", file=sys.stderr)
     return
 
 def main():
+    read_credentials()
     get_repo_url_internal()
 
     test_calls()
