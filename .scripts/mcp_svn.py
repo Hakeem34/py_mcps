@@ -16,16 +16,76 @@ class SVNNode:
     revision: str = ""  # 最終リビジョン
     children: list = dataclasses.field(default_factory=list)  # 子ノードのリスト（ディレクトリの場合）
 
-RE_REVISION = re.compile(r"^r\d+")
-RE_LOG_SEPARATOR = re.compile(r"^-{72}$")
+class LogStats:
+    target_path: str = None
+    limit: int
+    revision1: str
+    revision2: str
+    last_revision: int
+    keyword: str = ""
+    regex: bool = False
+
+
+RE_REVISION = re.compile(r"^r(\d+)")
+RE_LOG_SEPARATOR = re.compile(r"^-{72}\s*$")
 RE_LIST_LINE_DIR  = re.compile(r"^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\/\s*$")
 RE_LIST_LINE_FILE = re.compile(r"^\s*(\d+)\s+(\S+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$")
 
 g_repo_url = ""
 g_working_url = ""
+g_get_log_stats = LogStats()
+g_search_log_stats = LogStats()
 
 # FastMCPのインスタンスを作成
 mcp = FastMCP()
+
+def count_log_revisions(log_text: str) -> list:
+    """
+    SVNログのテキストから、リビジョンの数をカウントします。
+    """
+    revisions = []
+    just_after_separator = False
+    for line in log_text.split('\n'):
+        if RE_LOG_SEPARATOR.match(line):
+            just_after_separator = True
+        elif just_after_separator:
+            if match := RE_REVISION.match(line):
+                revisions.append(int(match.group(1)))
+            just_after_separator = False
+
+    return revisions
+
+def update_log_stats(log_stats: LogStats, log_text: str):
+    """"
+    LogStatsのlast_revisionを、ログテキストからカウントしたリビジョンの最後のものに更新します。
+    カウントできない場合は、revision2を数値に変換したものに更新します。
+    """
+    revisions = count_log_revisions(log_text)
+    if revisions:
+        log_stats.last_revision = int(revisions[-1])
+    else:
+        log_stats.last_revision = convert_revision_to_number(log_stats.target_path, log_stats.revision2)
+
+def convert_revision_to_number(local_path: str, revision: str) -> int:
+    """
+    リビジョン文字列を数値に変換します。
+    例えば、"HEAD"は最新のリビジョン番号に、"BASE"は作業コピーのベースリビジョン番号に変換されます。
+    有効なリビジョン指定でない場合は0を返します。
+    """
+   
+#   print(f"Converting local path: {local_path}, revision: {revision} to number", file=sys.stderr)
+    if revision.isdigit():
+        return int(revision)
+
+    revision_number = run_command(f"svn info {local_path} -r {revision} --show-item revision").strip()
+    if revision_number.isdigit():
+        return int(revision_number)
+
+    if match := re.match(r"^[Rr]\D+(\d+)$", revision):
+        revision_number = int(match.group(1))
+        return revision_number
+
+    return 0
 
 def decode_raw_output(raw_output: bytes) -> str:
     """
@@ -62,6 +122,41 @@ def try_command(command: str) -> str:
         print(f"予期しないエラー: {str(e)}", file=sys.stderr)
         return 1
 
+def search_svn_logs_internal(log_text: str, keyword: str, regex: bool = False) -> str:
+    """
+    指定されたパスのSVNログから、キーワードを含むログを検索します。
+    limitで取得するログの最大数を指定できます。デフォルトは10です。
+    revision1とrevision2でリビジョンの範囲を指定できます。デフォルトでは、revision1はHEAD、revision2は1となっています。
+    regexがTrueの場合、keywordは正規表現として扱われます。デフォルトはFalseです。
+    """
+    matched_logs = []
+    current_log = []
+    for line in log_text.split('\n'):
+        if RE_LOG_SEPARATOR.match(line):
+            if current_log:
+                log_text = "\n".join(current_log)
+                if regex:
+                    if re.search(keyword, log_text):
+                        matched_logs.append(log_text)
+                else:
+                    if keyword in log_text:
+                        matched_logs.append(log_text)
+                current_log = []
+        else:
+            current_log.append(line)
+
+    if current_log:
+        log_text = "\n".join(current_log)
+        if regex:
+            if re.search(keyword, log_text):
+                matched_logs.append(log_text)
+        else:
+            if keyword in log_text:
+                matched_logs.append(log_text)
+
+    return matched_logs
+
+
 def get_repo_url_internal() -> str:
     """
     リポジトリURLを取得します。
@@ -87,7 +182,7 @@ def get_svn_log_internal(path: str, optional_args: str = "") -> str:
 def get_svn_list_internal(path: str, revision: str = "HEAD") -> str:
     return run_command(f"svn list {path} -r {revision} -v")
 
-def convert_relative_path(path: str) -> str:
+def convert_target_path(path: str) -> str:
     """
     1.作業コピーのURLを付加した完全なURLに変換します。
     2.1が存在しない場合は、リポジトリからの相対パスを完全なURLに変換します。
@@ -120,17 +215,17 @@ def is_safe_path(target_path):
         # RuntimeError: 無限ループするシンボリックリンクなど（resolve時に発生の可能性）
         return False
 
-def get_svn_node_tree_internal(relative_path: str, revision: str = "HEAD", include_files: bool = False, depth: int = 1) -> SVNNode:
+def get_svn_node_tree_internal(target_path: str, revision: str = "HEAD", include_files: bool = False, depth: int = 1) -> SVNNode:
     """
-    指定された相対パスのSVNノードのツリー構造を取得します。
+    指定されたパスのSVNノードのツリー構造を取得します。
     """
-    node_kind = get_svn_node_kind(relative_path, revision)
+    node_kind = get_svn_node_kind(target_path, revision)
     if node_kind == "file":
-        print(f"Getting SVN node tree for file: {relative_path} at revision: {revision}", file=sys.stderr)
+        print(f"Getting SVN node tree for file: {target_path} at revision: {revision}", file=sys.stderr)
         return None
 
-    path = convert_relative_path(relative_path)
-#   print(f"Getting SVN node tree for directory: {relative_path} at revision: {revision} with path: {path}, revision: {revision}, depth: {depth}", file=sys.stderr)
+    path = convert_target_path(target_path)
+#   print(f"Getting SVN node tree for directory: {target_path} at revision: {revision} with path: {path}, revision: {revision}, depth: {depth}", file=sys.stderr)
     node = None
     lines = get_svn_list_internal(path, revision).split('\n')
     if depth > 0:
@@ -155,14 +250,14 @@ def get_svn_node_tree_internal(relative_path: str, revision: str = "HEAD", inclu
             if (name != r"."):
 #               print(f"Descending into directory: {name} revision: {node_revision}", file=sys.stderr)
                 if next_depth > 0 or next_depth == -1:
-                    child_node = get_svn_node_tree_internal('/'.join([relative_path, name]), revision, include_files, next_depth)
+                    child_node = get_svn_node_tree_internal('/'.join([target_path, name]), revision, include_files, next_depth)
                     node.children.append(child_node)
                 else:
                     child_node = SVNNode(url=path + "/" + name, basename=name, type="directory", revision=node_revision)
                     node.children.append(child_node)
             else:
 #               print(f"Found current directory entry: {name} revision: {node_revision}", file=sys.stderr)
-                node = SVNNode(url=path, basename=os.path.basename(relative_path), type="directory", revision=node_revision)
+                node = SVNNode(url=path, basename=os.path.basename(target_path), type="directory", revision=node_revision)
 
     return node
 
@@ -197,48 +292,49 @@ def match_svn_node_by_name(node: SVNNode, name_pattern: str) -> list:
     return matched_nodes
 
 @mcp.tool()
-def search_svn_nodes(relative_path: str, revision: str = "HEAD", file_name: str = "*", depth: int = -1) -> str:
+def search_svn_nodes(target_path: str, revision: str = "HEAD", file_name: str = "*", depth: int = -1) -> str:
     """
-    指定された相対パスのSVNノードを検索します。
+    指定されたパスのSVNノードを検索します。
+    target_pathはリポジトリ上の相対パスもしくは作業コピー上の相対パスで指定します。
     """
-    print(f"Searching SVN nodes for: {relative_path} at revision: {revision}, file_name: {file_name}, depth: {depth}", file=sys.stderr)
-    relative_path = relative_path.removesuffix('/')
-    node = get_svn_node_tree_internal(relative_path, revision, True, depth)
+    print(f"Searching SVN nodes for: {target_path} at revision: {revision}, file_name: {file_name}, depth: {depth}", file=sys.stderr)
+    target_path = target_path.removesuffix('/')
+    node = get_svn_node_tree_internal(target_path, revision, True, depth)
     if node is None:
-        return f"指定されたパスはファイルです: {relative_path}"
+        return f"指定されたパスはファイルです: {target_path}"
 
     matched_nodes = match_svn_node_by_name(node, file_name)
 #   for matched_node in matched_nodes:
 #       print(f"Matched node: {matched_node.url} type: {matched_node.type} revision: {matched_node.revision} size: {matched_node.size}", file=sys.stderr)    
         
-    path = convert_relative_path(relative_path)
-    paths = [matched_node.url.replace(path, relative_path, 1) for matched_node in matched_nodes]
+    path = convert_target_path(target_path)
+    paths = [matched_node.url.replace(path, target_path, 1) for matched_node in matched_nodes]
     return "\n".join(paths)
 
 @mcp.tool()
-def get_svn_tree(relative_path: str, revision: str = "HEAD", include_files: bool = False, depth: int = -1) -> str:
+def get_svn_tree(target_path: str, revision: str = "HEAD", include_files: bool = False, depth: int = -1) -> str:
     """
-    指定された相対パスのSVNツリー構造を取得します。
+    指定されたパスのSVNツリー構造を取得します。
     """
-    print(f"Getting SVN tree for: {relative_path} at revision: {revision}, include_files: {include_files}, depth: {depth}", file=sys.stderr)
-    relative_path = relative_path.removesuffix('/')
-    node = get_svn_node_tree_internal(relative_path, revision, include_files, depth)
+    print(f"Getting SVN tree for: {target_path} at revision: {revision}, include_files: {include_files}, depth: {depth}", file=sys.stderr)
+    target_path = target_path.removesuffix('/')
+    node = get_svn_node_tree_internal(target_path, revision, include_files, depth)
     if node is None:
-        return f"指定されたパスはファイルです: {relative_path}"
+        return f"指定されたパスはファイルです: {target_path}"
 
-#   print(f"SVN tree for {relative_path}:\n{node}", file=sys.stderr)
+#   print(f"SVN tree for {target_path}:\n{node}", file=sys.stderr)
     return format_svn_tree(node)
 
 
 
 @mcp.tool()
-def get_svn_node_size(relative_path: str, revision: str = "HEAD") -> str:
+def get_svn_node_size(target_path: str, revision: str = "HEAD") -> str:
     """
-    指定された相対パスのSVNノードのサイズを取得します。
+    指定されたパスのSVNノードのサイズを取得します。
     """
-    path = convert_relative_path(relative_path)
-    print(f"Getting SVN node size for: {relative_path}", file=sys.stderr)
-    if get_svn_node_kind(relative_path, revision) == "directory":
+    path = convert_target_path(target_path)
+    print(f"Getting SVN node size for: {target_path}", file=sys.stderr)
+    if get_svn_node_kind(target_path, revision) == "directory":
         return "0"
 
     result = run_command(f"svn list {path} -r {revision} -v")
@@ -248,16 +344,16 @@ def get_svn_node_size(relative_path: str, revision: str = "HEAD") -> str:
             size = match.group(1)
             return size
         
-    print(f"Size not found in SVN info output for: {relative_path}", file=sys.stderr)
+    print(f"Size not found in SVN info output for: {target_path}", file=sys.stderr)
     return "Size not found"
 
 @mcp.tool()
-def get_svn_node_kind(relative_path: str, revision: str = "HEAD") -> str:
+def get_svn_node_kind(target_path: str, revision: str = "HEAD") -> str:
     """
-    指定された相対パスが存在するか、存在する場合はノードの種類を取得します。
+    指定されたパスが存在するか、存在する場合はノードの種類を取得します。
     """
-    path = convert_relative_path(relative_path)
-#   print(f"Getting SVN node kind for: {relative_path}", file=sys.stderr)
+    path = convert_target_path(target_path)
+#   print(f"Getting SVN node kind for: {target_path}", file=sys.stderr)
     result = run_command(f"svn info {path}")
     for line in result.split('\n'):
         if line.startswith("Node Kind:"):
@@ -265,15 +361,15 @@ def get_svn_node_kind(relative_path: str, revision: str = "HEAD") -> str:
     return "non-existent"
 
 @mcp.tool()
-def blame_svn_file(relative_path: str, revision: str = "HEAD", start_line: int = 1, end_line: int = 0) -> str:
+def blame_svn_file(target_path: str, revision: str = "HEAD", start_line: int = 1, end_line: int = 0) -> str:
     """
-    指定された相対パスのSVNファイルのblame情報を取得します。
+    指定されたパスのSVNファイルのblame情報を取得します。
     blame情報は、各行の最終変更リビジョンと著者を含みます。
     start_lineとend_lineを指定することで、ファイルの特定の行範囲を取得できます。
     マイナス値を指定すると末尾からの行数を表します。end_lineが0の場合は、ファイルの末尾までを取得します。
     """
-    path = convert_relative_path(relative_path)
-    print(f"Getting SVN blame for: {relative_path} at revision: {revision}, start_line: {start_line}, end_line: {end_line}", file=sys.stderr)
+    path = convert_target_path(target_path)
+    print(f"Getting SVN blame for: {target_path} at revision: {revision}, start_line: {start_line}, end_line: {end_line}", file=sys.stderr)
     text = run_command(f"svn blame {path} -r {revision}")
     if start_line > 0:
         start = max(0, start_line - 1)
@@ -287,14 +383,14 @@ def blame_svn_file(relative_path: str, revision: str = "HEAD", start_line: int =
     return text
 
 @mcp.tool()
-def cat_svn_file(relative_path: str, revision: str = "HEAD", start_line: int = 1, end_line: int = 0) -> str:
+def cat_svn_file(target_path: str, revision: str = "HEAD", start_line: int = 1, end_line: int = 0) -> str:
     """
-    指定された相対パスのSVNファイルの内容を取得します。
+    指定されたパスのSVNファイルの内容を取得します。
     start_lineとend_lineを指定することで、ファイルの特定の行範囲を取得できます。
     マイナス値を指定すると末尾からの行数を表します。end_lineが0の場合は、ファイルの末尾までを取得します。
     """
-    path = convert_relative_path(relative_path)
-    print(f"Getting SVN file content for: {relative_path} at revision: {revision} start_line: {start_line} end_line: {end_line}", file=sys.stderr)
+    path = convert_target_path(target_path)
+    print(f"Getting SVN file content for: {target_path} at revision: {revision} start_line: {start_line} end_line: {end_line}", file=sys.stderr)
     text = run_command(f"svn cat {path} -r {revision}")
     if start_line > 0:
         start = max(0, start_line - 1)
@@ -308,80 +404,167 @@ def cat_svn_file(relative_path: str, revision: str = "HEAD", start_line: int = 1
     return text
 
 @mcp.tool()
-def export_svn_file(relative_path: str, revision: str = "HEAD", output_path: str = "_tmp_export") -> str:
+def export_svn_file(target_path: str, revision: str = "HEAD", output_path: str = "_tmp_export") -> str:
     """
-    指定された相対パスをoutput_pathにエクスポートします。
+    指定されたパスをoutput_pathにエクスポートします。
     """
     if not is_safe_path(output_path):
         return f"安全でないパスが指定されました: {output_path}"
 
-    path = convert_relative_path(relative_path)
-    if get_svn_node_kind(relative_path) == "directory":
-        output_path = os.path.join(output_path, os.path.basename(relative_path))
+    path = convert_target_path(target_path)
+    if get_svn_node_kind(target_path) == "directory":
+        output_path = os.path.join(output_path, os.path.basename(target_path))
     else:
         if os.path.dirname(output_path) == "":
-            output_path = os.path.join(output_path, os.path.basename(relative_path))
+            output_path = os.path.join(output_path, os.path.basename(target_path))
 
-    print(f"Exporting SVN file: {relative_path} at revision: {revision} to output path: {output_path}({os.path.dirname(output_path)})", file=sys.stderr)
+    print(f"Exporting SVN file: {target_path} at revision: {revision} to output path: {output_path}({os.path.dirname(output_path)})", file=sys.stderr)
     os.makedirs(os.path.dirname(output_path), exist_ok=True) if output_path else None
     result = run_command(f"svn export {path} -r {revision} {output_path}")
     return result
 
 @mcp.tool()
-def get_svn_diff_by_revision(relative_path: str, revision1: str, revision2: str) -> str:
+def get_svn_diff_by_revision(target_path: str, revision1: str, revision2: str) -> str:
     """
-    指定された相対パスのリビジョン間の差分を取得します。
+    指定されたパスのリビジョン間の差分を取得します。
     """
-    path = convert_relative_path(relative_path)
-    print(f"Getting SVN diff for: {relative_path} between revisions: {revision1} and {revision2}", file=sys.stderr)
+    path = convert_target_path(target_path)
+    print(f"Getting SVN diff for: {target_path} between revisions: {revision1} and {revision2}", file=sys.stderr)
     return run_command(f"svn diff -r {revision1}:{revision2} {path}")
 
 @mcp.tool()
-def get_svn_diff_by_url(relative_path1: str, relative_path2: str, revision1="HEAD", revision2="HEAD") -> str:
+def get_svn_diff_by_url(target_path1: str, target_path2: str, revision1="HEAD", revision2="HEAD") -> str:
     """
-    指定された相対パスのリビジョン間の差分を取得します。
+    指定されたパスのリビジョン間の差分を取得します。
     """
-    path1 = convert_relative_path(relative_path1)
-    path2 = convert_relative_path(relative_path2)
+    path1 = convert_target_path(target_path1)
+    path2 = convert_target_path(target_path2)
     print(f"Getting SVN diff for: -r {revision1} {path1} -r {revision2} {path2}", file=sys.stderr)
     return run_command(f"svn diff -r {revision1} {path1} -r {revision2} {path2}")
 
 @mcp.tool()
-def get_svn_commit_history(relative_path: str) -> str:
+def get_svn_commit_history(target_path: str) -> str:
     """
-    リポジトリ内の指定された相対パスのSVNコミット履歴(Revisionのみ)を取得します。
+    リポジトリ内の指定されたパスのSVNコミット履歴(Revisionのみ)を取得します。
     """
     result = []
-    print(f"Getting SVN commit history for: {relative_path}", file=sys.stderr)
-    path = convert_relative_path(relative_path)
+    print(f"Getting SVN commit history for: {target_path}", file=sys.stderr)
+    path = convert_target_path(target_path)
     log_result = get_svn_log_internal(f"{path}", "-q")
     for line in log_result.split('\n'):
-        print(f"Processing log line: {line}", file=sys.stderr)
+#       print(f"Processing log line: {line}", file=sys.stderr)
         revision_match = RE_REVISION.match(line)
         if revision_match:
-            result.append(revision_match.group())
+            result.append(revision_match.group(1))
 
-    print(f"Found revisions: {result}", file=sys.stderr)
+#   print(f"Found revisions: {result}", file=sys.stderr)
     return "\n".join(result)
 
 @mcp.tool()
 def get_svn_commit_log(revision: str) -> str:
     """
-    SVNコミットログ(詳細)をリビジョン指定で取得します。
+    SVNコミットログ(詳細)をリビジョン指定で全文取得します。
     """
     print(f"Getting SVN log for revision: {revision}", file=sys.stderr)
     return get_svn_log_internal(f"{g_repo_url}", f"-v -r {revision}")
 
 @mcp.tool()
-def get_svn_log(relative_path: str, optional_args: str = "") -> str:
+def get_svn_logs(target_path: str, limit: int = 10, revision1: str = "HEAD", revision2: str = "1") -> str:
     """
-    指定された相対パスのSVNログを取得します。
-    詳細な情報を取得するために、オプション引数(-v)を追加できます。
-    対象とするリビジョンを限定するために、オプション引数(-r)を追加できます。
+    指定されたパスのSVNログを取得します。
+    limitで取得するログの最大数を指定できます。デフォルトは10です。
+    revision1とrevision2でリビジョンの範囲を指定できます。デフォルトでは、revision1はHEAD、revision2は1となっています。
     """
-    path = convert_relative_path(relative_path)
-    print(f"Getting SVN log for: {relative_path} with optional args: {optional_args}", file=sys.stderr)
-    return get_svn_log_internal(path, optional_args)
+    global g_get_log_stats
+
+    g_get_log_stats.target_path = target_path
+    g_get_log_stats.limit = limit
+    g_get_log_stats.revision1 = revision1
+    g_get_log_stats.revision2 = revision2
+
+    path = convert_target_path(target_path)
+    print(f"Getting SVN logs for: {target_path} with limit: {limit}, revisions: {revision1}:{revision2}", file=sys.stderr)
+    text = get_svn_log_internal(path, f"-v -l {limit} -r {revision1}:{revision2}")
+    update_log_stats(g_get_log_stats, text)
+    return text
+
+@mcp.tool()
+def get_svn_logs_continue() -> str:
+    """
+    直前のget_svn_logsの続きからログを取得します
+    """
+    global g_get_log_stats
+
+    if g_get_log_stats.target_path is None:
+        return "前回のget_svn_logsの情報がありません"
+
+    arg_revision1 = convert_revision_to_number(g_get_log_stats.target_path, g_get_log_stats.revision1)
+    arg_revision2 = convert_revision_to_number(g_get_log_stats.target_path, g_get_log_stats.revision2)
+    last_revision = g_get_log_stats.last_revision
+    if last_revision == arg_revision2:
+        return "これ以上取得できるログはありません"
+
+    if arg_revision1 < arg_revision2:
+        start_revision = g_get_log_stats.last_revision + 1
+    else:
+        start_revision = g_get_log_stats.last_revision - 1
+
+    print(f"Continuing to get older SVN logs for: {g_get_log_stats.target_path} with limit: {g_get_log_stats.limit}, revisions: {start_revision}:{g_get_log_stats.revision2}", file=sys.stderr)
+    text = get_svn_log_internal(convert_target_path(g_get_log_stats.target_path), f"-v -l {g_get_log_stats.limit} -r {start_revision}:{g_get_log_stats.revision2}")
+    update_log_stats(g_get_log_stats, text)
+    return text
+
+
+@mcp.tool()
+def search_svn_logs(target_path: str, keyword: str, regex: bool = False, limit: int = 10, revision1: str = "HEAD", revision2: str = "1") -> str:
+    """
+    指定されたSVNログを検索して、ヒットしたものを返します
+    limitで取得するログの最大数を指定できます。デフォルトは10です。
+    revision1とrevision2でリビジョンの範囲を指定できます。デフォルトでは、revision1はHEAD、revision2は1となっています。
+    regexがTrueの場合、keywordは正規表現として扱われます。デフォルトはFalseです。
+    """
+    global g_search_log_stats
+
+    g_search_log_stats.target_path = target_path
+    g_search_log_stats.limit = limit
+    g_search_log_stats.revision1 = revision1
+    g_search_log_stats.revision2 = revision2
+    g_search_log_stats.keyword = keyword
+    g_search_log_stats.regex = regex
+
+    path = convert_target_path(target_path)
+    print(f"Searching SVN logs for: {target_path} with keyword: {keyword}, limit: {limit}, revisions: {revision1}:{revision2}", file=sys.stderr)
+    text = get_svn_log_internal(path, f"-v -l {limit} -r {revision1}:{revision2}")
+    update_log_stats(g_search_log_stats, text)
+    matched_logs = search_svn_logs_internal(text, keyword, regex)
+    return "\n\n".join(matched_logs)
+
+@mcp.tool()
+def search_svn_logs_continue() -> str:
+    """
+    直前のsearch_svn_logsの続きからログを取得して検索します
+    """
+    global g_search_log_stats
+
+    if g_search_log_stats.target_path is None:
+        return "前回のsearch_svn_logsの情報がありません"
+
+    arg_revision1 = convert_revision_to_number(g_search_log_stats.target_path, g_search_log_stats.revision1)
+    arg_revision2 = convert_revision_to_number(g_search_log_stats.target_path, g_search_log_stats.revision2)
+    last_revision = g_search_log_stats.last_revision
+    if last_revision == arg_revision2:
+        return "これ以上取得できるログはありません"
+
+    if arg_revision1 < arg_revision2:
+        start_revision = g_search_log_stats.last_revision + 1
+    else:
+        start_revision = g_search_log_stats.last_revision - 1
+
+    print(f"Continuing to search older SVN logs for: {g_search_log_stats.target_path} with keyword: {g_search_log_stats.keyword}, limit: {g_search_log_stats.limit}, revisions: {start_revision}:{g_search_log_stats.revision2}", file=sys.stderr)
+    text = get_svn_log_internal(convert_target_path(g_search_log_stats.target_path), f"-v -l {g_search_log_stats.limit} -r {start_revision}:{g_search_log_stats.revision2}")
+    update_log_stats(g_search_log_stats, text)
+    matched_logs = search_svn_logs_internal(text, g_search_log_stats.keyword, g_search_log_stats.regex)
+    return "\n\n".join(matched_logs)
 
 @mcp.tool()
 def get_svn_info() -> str:
@@ -391,17 +574,19 @@ def get_svn_info() -> str:
     return run_command("svn info")
 
 @mcp.tool()
-def get_svn_list(relative_path: str, revision: str = "HEAD") -> str:
+def get_svn_list(target_path: str, revision: str = "HEAD") -> str:
     """
-    指定された相対パスのSVNリスト(詳細情報付き)を取得します。
+    SVNリスト(詳細情報付き)を取得します。
+    target_pathはリポジトリ上の相対パスもしくは作業コピー上の相対パスで指定します。
     """
 
-    print(f"Getting SVN list for: {relative_path} at revision: {revision}", file=sys.stderr)
-    path = convert_relative_path(relative_path)
+    print(f"Getting SVN list for: {target_path} at revision: {revision}", file=sys.stderr)
+    path = convert_target_path(target_path)
     return get_svn_list_internal(path, revision)
 
 def test_calls():
-#   get_svn_commit_history(".scripts/mcp_svn.py")
+#   result = get_svn_commit_history(".scripts/mcp_svn.py")
+#   print(f"SVN commit history:\n{result}", file=sys.stderr)
 #   size = get_svn_node_size(".scripts/mcp_svn.py")
 #   print(f"Size of .scripts/mcp_svn.py: {size}", file=sys.stderr)
 #   size = get_svn_node_size(".scripts")
@@ -418,6 +603,38 @@ def test_calls():
 #   print(f"SVN tree:\n{result}", file=sys.stderr)
 #   result = search_svn_nodes("trunk/tools", revision="HEAD", file_name="*.py", depth=3)
 #   print(f"Search result:\n{result}", file=sys.stderr)
+#   result = search_svn_logs(".", keyword="refs #", regex=False, limit=10)
+#   print(f"Search result:\n{result}", file=sys.stderr)
+#   result = search_svn_logs(".", keyword=r"refs #\d+", regex=True, limit=10)
+#   print(f"Search result:\n{result}", file=sys.stderr)
+
+#   revision = convert_revision_to_number(".", "HEAD")
+#   print(f"HEAD revision number: {revision}", file=sys.stderr)
+#   revision = convert_revision_to_number(".", "BASE")
+#   print(f"BASE revision number: {revision}", file=sys.stderr)
+#   revision = convert_revision_to_number(".", " PREV")
+#   print(f"PREV revision number: {revision}", file=sys.stderr)
+#   revision = convert_revision_to_number(".", "COMMITTED")
+#   print(f"COMMITTED revision number: {revision}", file=sys.stderr)
+#   revision = convert_revision_to_number(".", "{2025-05-04}")
+#   print(f"2025-05-04 revision number: {revision}", file=sys.stderr)
+#   revision = convert_revision_to_number(".", "{2026-05-04}")
+#   print(f"2026-05-04 revision number: {revision}", file=sys.stderr)
+#   revision = convert_revision_to_number(".", "Rev.1234")
+#   print(f"Rev.1234 revision number: {revision}", file=sys.stderr)
+
+#   result = get_svn_logs(".", limit=10, revision1="HEAD", revision2="1")
+#   print(f"SVN logs:\n{result}", file=sys.stderr)
+#   result = get_svn_logs_continue()
+#   print(f"SVN logs continue1:\n{result}", file=sys.stderr)
+#   result = get_svn_logs_continue()
+#   print(f"SVN logs continue2:\n{result}", file=sys.stderr)
+#   result = get_svn_logs_continue()
+#   print(f"SVN logs continue3:\n{result}", file=sys.stderr)
+#   result = get_svn_logs_continue()
+#   print(f"SVN logs continue4:\n{result}", file=sys.stderr)
+#   result = get_svn_logs_continue()
+#   print(f"SVN logs continue5:\n{result}", file=sys.stderr)
     return
 
 def main():
