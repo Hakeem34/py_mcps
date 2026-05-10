@@ -1,10 +1,11 @@
 {
 	"servers": {
-		"mcp-hello-world": {
+		"mcp-voicevox": {
 			"type": "stdio",
 			"command": "python",
 			"args": [
-				"${workspaceFolder}/.scripts/mcp_hello_world.py"
+				"${workspaceFolder}/.scripts/mcp_voicevox.py",
+				"--utf8"
 			]
 		},
 		"mcp-redmine": {
