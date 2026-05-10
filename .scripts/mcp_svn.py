@@ -28,6 +28,8 @@ class LogStats:
 
 RE_REVISION = re.compile(r"^r(\d+)")
 RE_LOG_SEPARATOR = re.compile(r"^-{72}\s*$")
+RE_LOG_HEADER    = re.compile(r"^r(\d+)\s+\|\s+(\S+)\s+\|\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+RE_LOG_COPY      = re.compile(r"\s*A\s*(\S+)\s*\(from\s+([^:]+):(\d+)\)")
 RE_LIST_LINE_DIR  = re.compile(r"^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\/\s*$")
 RE_LIST_LINE_FILE = re.compile(r"^\s*(\d+)\s+(\S+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$")
 
@@ -200,6 +202,9 @@ def convert_target_path(path: str) -> str:
     4.いずれも存在しない場合は、ローカルファイルシステム上の相対パスとして扱います。
     ローカルファイルも存在しない場合はNoneを返します。
     """
+    if path.startswith("/"):
+        path = path[1:]
+ 
     repository_url = g_working_url + "/" + path
 #   print(f"Trying working URL: {repository_url}", file=sys.stderr)
     if try_command(f"svn info {repository_url}") == 0:
@@ -449,7 +454,7 @@ def get_svn_diff_by_revision(target_path: str, revision1: str, revision2: str) -
 @mcp.tool()
 def get_svn_diff_by_url(target_path1: str, target_path2: str, revision1="HEAD", revision2="HEAD") -> str:
     """
-    指定されたパスのリビジョン間の差分を取得します。
+    指定された二つのパスの差分を取得します。
     """
     path1 = convert_target_path(target_path1)
     path2 = convert_target_path(target_path2)
@@ -459,11 +464,10 @@ def get_svn_diff_by_url(target_path1: str, target_path2: str, revision1="HEAD", 
 @mcp.tool()
 def get_svn_diff(target_path: str) -> str:
     """
-    指定されたパスのwork/baseの差分を取得します。
+    指定されたローカルパスのwork/baseの差分を取得します。
     """
-    path = convert_target_path(target_path)
-    print(f"Getting SVN diff for: {path}", file=sys.stderr)
-    return run_command(f"svn diff {path}")
+    print(f"Getting SVN diff for: {target_path}", file=sys.stderr)
+    return run_command(f'svn diff --internal-diff -x "-p -U 0" {target_path}')
 
 @mcp.tool()
 def get_svn_commit_history(target_path: str) -> str:
@@ -544,6 +548,34 @@ def get_svn_status() -> str:
     """
     print(f"Getting SVN status for: {g_working_root}", file=sys.stderr)
     return run_command(f"svn status {g_working_root}")
+
+@mcp.tool()
+def get_svn_branch_base(target_path: str) -> str:
+    """
+    指定されたパスのSVNブランチ派生元を取得します。
+    """
+    path = convert_target_path(target_path)
+    relative_path = "/" + os.path.relpath(path, g_repo_url).replace("\\", "/")
+    print(f"Getting SVN branch base for: {target_path} -> {relative_path}", file=sys.stderr)
+    text = run_command(f"svn log {path} --stop-on-copy -q -v")
+    revision = "unknown"
+    author = "unknown"
+    date = "unknown"
+    for line in text.split('\n'):
+        print(f"Processing log line for branch base: {line}", file=sys.stderr)
+        if match := RE_LOG_HEADER.match(line):
+            revision = match.group(1)
+            author = match.group(2)
+            date = match.group(3)
+        elif match := RE_LOG_COPY.search(line):
+            added_path = match.group(1)
+            copy_from_path = match.group(2)
+            copy_from_revision = match.group(3)
+            if added_path == relative_path:
+                return f"このパスは{date} r{revision}で{copy_from_path}のr{copy_from_revision}から派生しました"
+
+    return f"このパスは{date} r{revision}で新規作成されました。(派生ではない)"
+
 
 @mcp.tool()
 def search_svn_logs(target_path: str, keyword: str, regex: bool = False, limit: int = 10, revision1: str = "HEAD", revision2: str = "1") -> str:
@@ -666,8 +698,17 @@ def test_calls():
 #   result = get_svn_logs_continue()
 #   print(f"SVN logs continue5:\n{result}", file=sys.stderr)
 
-    result = get_svn_status()
-    print(f"SVN status:\n{result}", file=sys.stderr)
+#   result = get_svn_status()
+#   print(f"SVN status:\n{result}", file=sys.stderr)
+    result = get_svn_branch_base(".")
+    print(f"SVN branch base:\n{result}", file=sys.stderr)
+    result = get_svn_branch_base("branches/tools")
+    print(f"SVN branch base:\n{result}", file=sys.stderr)
+    result = get_svn_branch_base("branches/tools/mcp_redmine/mcp_redmine_b")
+    print(f"SVN branch base:\n{result}", file=sys.stderr)
+    result = get_svn_diff(".scripts/mcp_svn.py")
+    print(f"SVN diff:\n{result}", file=sys.stderr)
+
     return
 
 def read_credentials():
@@ -677,8 +718,13 @@ def read_credentials():
     global g_username
     global g_password
 
-    path = os.path.abspath(__file__)
+    try:
+        path = sys._MEIPASS
+    except AttributeError:
+        path = os.path.abspath(__file__)
+
     path = path.replace(os.path.basename(path), "credentials.txt")
+    print(f"Reading credentials from path: {path}", file=sys.stderr)
     if not os.path.exists(path):
         print(f"Credentials file not found", file=sys.stderr)
         return
@@ -697,10 +743,8 @@ def read_credentials():
 def main():
     read_credentials()
     get_repo_url_internal()
-
     test_calls()
 
-    # コマンドライン引数を処理
     mcp.run()
 
 
