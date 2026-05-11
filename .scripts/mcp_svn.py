@@ -30,6 +30,7 @@ RE_REVISION = re.compile(r"^r(\d+)")
 RE_LOG_SEPARATOR = re.compile(r"^-{72}\s*$")
 RE_LOG_HEADER    = re.compile(r"^r(\d+)\s+\|\s+(\S+)\s+\|\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 RE_LOG_COPY      = re.compile(r"\s*A\s*(\S+)\s*\(from\s+([^:]+):(\d+)\)")
+RE_LOG_NOT_ADD   = re.compile(r"\s*[MDR]\s*(\S+)\s*")
 RE_LIST_LINE_DIR  = re.compile(r"^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\/\s*$")
 RE_LIST_LINE_FILE = re.compile(r"^\s*(\d+)\s+(\S+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$")
 
@@ -549,6 +550,21 @@ def get_svn_status() -> str:
     print(f"Getting SVN status for: {g_working_root}", file=sys.stderr)
     return run_command(f"svn status {g_working_root}")
 
+
+def is_ancestor(path_A, path_B):
+    """
+    path_A が path_B の祖先ディレクトリなら True
+    同一パスも True とする
+    """
+    path_A = Path(path_A).resolve()
+    path_B = Path(path_B).resolve()
+
+    try:
+        path_B.relative_to(path_A)
+        return True
+    except ValueError:
+        return False
+
 @mcp.tool()
 def get_svn_branch_base(target_path: str) -> str:
     """
@@ -561,18 +577,28 @@ def get_svn_branch_base(target_path: str) -> str:
     revision = "unknown"
     author = "unknown"
     date = "unknown"
+    copy_from_path = ""
+    copy_from_revision = ""
+    not_add_log = False
     for line in text.split('\n'):
-        print(f"Processing log line for branch base: {line}", file=sys.stderr)
-        if match := RE_LOG_HEADER.match(line):
+#       print(f"Processing log line for branch base: {line}", file=sys.stderr)
+        if match := RE_LOG_SEPARATOR.match(line):
+            if (not_add_log == False) and (copy_from_path != ""):
+                return f"このパスは{date} r{revision}で{copy_from_path}のr{copy_from_revision}から派生しました"
+
+            copy_from_path = ""
+            not_add_log = False
+        elif match := RE_LOG_HEADER.match(line):
             revision = match.group(1)
             author = match.group(2)
             date = match.group(3)
+        elif match := RE_LOG_NOT_ADD.match(line):
+            not_add_log = True
         elif match := RE_LOG_COPY.search(line):
             added_path = match.group(1)
-            copy_from_path = match.group(2)
-            copy_from_revision = match.group(3)
-            if added_path == relative_path:
-                return f"このパスは{date} r{revision}で{copy_from_path}のr{copy_from_revision}から派生しました"
+            if is_ancestor(added_path, relative_path):
+                copy_from_path = match.group(2)
+                copy_from_revision = match.group(3)
 
     return f"このパスは{date} r{revision}で新規作成されました。(派生ではない)"
 
@@ -705,6 +731,8 @@ def test_calls():
     result = get_svn_branch_base("branches/tools")
     print(f"SVN branch base:\n{result}", file=sys.stderr)
     result = get_svn_branch_base("branches/tools/mcp_redmine/mcp_redmine_b")
+    print(f"SVN branch base:\n{result}", file=sys.stderr)
+    result = get_svn_branch_base(".scripts/mcp_svn.py")
     print(f"SVN branch base:\n{result}", file=sys.stderr)
     result = get_svn_diff(".scripts/mcp_svn.py")
     print(f"SVN diff:\n{result}", file=sys.stderr)
