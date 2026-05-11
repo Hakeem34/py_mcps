@@ -21,6 +21,13 @@
 			"args": [
 				"${workspaceFolder}/.scripts/mcp_svn.py"
 			]
+		},
+		"mcp-confluence": {
+			"type": "stdio",
+			"command": "python",
+			"args": [
+				"${workspaceFolder}/.scripts/mcp_confluence.py"
+			]
 		}
 	},
 	"inputs": []

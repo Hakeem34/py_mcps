@@ -3,6 +3,7 @@ import re
 import sys
 import requests
 from requests.auth import HTTPBasicAuth
+from mcp.server.fastmcp import FastMCP
 
 
 # ===== 設定 =====
@@ -11,6 +12,8 @@ g_opt_user  = ""
 g_opt_pass  = ""
 g_opt_token = ""
 
+# FastMCPのインスタンスを作成
+mcp = FastMCP()
 
 
 def read_credentials():
@@ -48,7 +51,11 @@ def read_credentials():
     return
 
 
-def get_space_list():
+@mcp.tool()
+def get_space_list() -> str:
+    """
+    Confluenceのスペースのリストを取得します
+    """
     space = f"{g_opt_url}/wiki/rest/api/space"
 
     # ===== リクエスト =====
@@ -65,22 +72,27 @@ def get_space_list():
 
     # ===== 結果処理 =====
     if response.status_code != 200:
-        print(f"Error: {response.status_code}")
-        print(response.text)
-        exit(1)
+        print(f"Error: {response.status_code}", file=sys.stderr)
+        print(response.text, file=sys.stderr)
+        return f"Error: {response.status_code}"
 
     data = response.json()
-#   print(f"data:\n{data}\n\n")  # デバッグ用に全データを表示
+    print(f"data:\n{data}\n\n", file=sys.stderr)  # デバッグ用に全データを表示
 
     # スペース一覧表示
+    result = ""
     for space in data.get("results", []):
-        print(f"{space['key']} : {space['name']}")
+        print(f"{space['key']} : {space['name']}", file=sys.stderr)
+        result += f"{space['key']} : {space['name']}" + "\n"
+    return result
+    
+    
 
 
 def main():
     read_credentials()
     get_space_list()
-    pass
+    mcp.run()
 
 if __name__ == "__main__":
     main()
