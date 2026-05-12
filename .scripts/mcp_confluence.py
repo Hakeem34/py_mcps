@@ -6,6 +6,8 @@ from requests.auth import HTTPBasicAuth
 from mcp.server.fastmcp import FastMCP
 
 
+g_space_keys = {}
+
 # ===== 設定 =====
 g_opt_url   = ""
 g_opt_user  = ""
@@ -50,24 +52,51 @@ def read_credentials():
 
     return
 
+@mcp.tool()
+def get_content_list(space_name) -> str:
+    """
+    """
+    url = f"{g_opt_url}/wiki/rest/api/content"
+    space_key = g_space_keys[space_name]
+    response = requests.get(
+        url,
+        auth=HTTPBasicAuth(g_opt_user, g_opt_token),
+        headers={"Accept": "application/json"},
+        params={
+            "spaceKey": space_key,
+            "limit": 50,
+ #          "type": "page"   # page / blogpost など
+        }
+    )
+
+    if response.status_code != 200:
+        print(f"Error: {response.status_code}")
+        print(response.text)
+        return
+
+    data = response.json()
+
+    print(f"=== Contents in Space: {space_name} ===")
+
+    for content in data.get("results", []):
+        print(f"[{content['id']}] {content['title']}")
+#       print(content)
+
 
 @mcp.tool()
 def get_space_list() -> str:
     """
     Confluenceのスペースのリストを取得します
     """
+    global g_space_keys
     space = f"{g_opt_url}/wiki/rest/api/space"
 
     # ===== リクエスト =====
     response = requests.get(
         space,
         auth=HTTPBasicAuth(g_opt_user, g_opt_token),
-        headers={
-            "Accept": "application/json"
-        },
-        params={
-            "limit": 50  # 取得件数（デフォルトより増やす）
-        }
+        headers={"Accept": "application/json"},
+        params={"limit": 50 }          # 取得件数（デフォルトより増やす）
     )
 
     # ===== 結果処理 =====
@@ -77,21 +106,38 @@ def get_space_list() -> str:
         return f"Error: {response.status_code}"
 
     data = response.json()
-    print(f"data:\n{data}\n\n", file=sys.stderr)  # デバッグ用に全データを表示
+#   print(f"data:\n{data}\n\n", file=sys.stderr)  # デバッグ用に全データを表示
 
     # スペース一覧表示
     result = ""
     for space in data.get("results", []):
         print(f"{space['key']} : {space['name']}", file=sys.stderr)
         result += f"{space['key']} : {space['name']}" + "\n"
+        g_space_keys[space['name']] = space['key']
     return result
     
     
+def test_v2_api():
+    url = f"{g_opt_url}/wiki/api/v2/pages"
 
+    response = requests.get(
+        url,
+        auth=HTTPBasicAuth(g_opt_user, g_opt_token),
+        headers={
+            "Accept": "application/json"
+        }
+    )
+
+    print("status:", response.status_code)
+    print(response.text[:500])
 
 def main():
     read_credentials()
+    test_v2_api()
     get_space_list()
+
+    for name in g_space_keys:
+        get_content_list(name)
     mcp.run()
 
 if __name__ == "__main__":
