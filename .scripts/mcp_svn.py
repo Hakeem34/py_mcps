@@ -29,8 +29,8 @@ class LogStats:
 RE_REVISION = re.compile(r"^r(\d+)")
 RE_LOG_SEPARATOR = re.compile(r"^-{72}\s*$")
 RE_LOG_HEADER    = re.compile(r"^r(\d+)\s+\|\s+(\S+)\s+\|\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
-RE_LOG_COPY      = re.compile(r"\s*A\s*(\S+)\s*\(from\s+([^:]+):(\d+)\)")
-RE_LOG_NOT_ADD   = re.compile(r"\s*[MDR]\s*(\S+)\s*")
+RE_LOG_COPY      = re.compile(r"^\s*A\s*(\S+)\s*\(from\s+([^:]+):(\d+)\)")
+RE_LOG_NOT_ADD   = re.compile(r"^\s*[MDR]\s*(\S+)\s*")
 RE_LIST_LINE_DIR  = re.compile(r"^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\/\s*$")
 RE_LIST_LINE_FILE = re.compile(r"^\s*(\d+)\s+(\S+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$")
 
@@ -311,6 +311,40 @@ def match_svn_node_by_name(node: SVNNode, name_pattern: str) -> list:
     
     return matched_nodes
 
+def pick_up_dir_copy_logs(log_text: str) -> list:
+    logs = []
+
+    revision = "unknown"
+    author = "unknown"
+    date = "unknown"
+    copy_from_path = ""
+    copy_from_revision = ""
+    not_add_log = False
+    for log in log_text.split("\n"):
+        if match := RE_LOG_SEPARATOR.match(log):
+            if (not_add_log == False) and (copy_from_path != ""):
+                if (get_svn_node_kind(added_path, revision) == "directory"):
+                    text = f"{date} | {added_path}@{revision} | {copy_from_path}@{copy_from_revision}" 
+                    print(text, file=sys.stderr)
+                    logs.append(text)
+
+            copy_from_path = ""
+            not_add_log = False
+        elif match := RE_LOG_HEADER.match(log):
+            revision = match.group(1)
+            author = match.group(2)
+            date = match.group(3)
+        elif match := RE_LOG_NOT_ADD.match(log):
+            not_add_log = True
+        elif match := RE_LOG_COPY.match(log):
+            added_path = match.group(1)
+            copy_from_path = match.group(2)
+            copy_from_revision = match.group(3)
+        else:
+#           print(log)
+            pass
+    return logs
+
 @mcp.tool()
 def search_svn_nodes(target_path: str, revision: str = "HEAD", file_name: str = "*", depth: int = -1) -> str:
     """
@@ -571,6 +605,9 @@ def get_svn_branch_base(target_path: str) -> str:
     指定されたパスのSVNブランチ派生元を取得します。
     """
     path = convert_target_path(target_path)
+    if path == None:
+        return f'指定されたパス{target_path}は見つかりませんでした'
+
     relative_path = "/" + os.path.relpath(path, g_repo_url).replace("\\", "/")
     print(f"Getting SVN branch base for: {target_path} -> {relative_path}", file=sys.stderr)
     text = run_command(f"svn log {path} --stop-on-copy -q -v")
@@ -594,7 +631,7 @@ def get_svn_branch_base(target_path: str) -> str:
             date = match.group(3)
         elif match := RE_LOG_NOT_ADD.match(line):
             not_add_log = True
-        elif match := RE_LOG_COPY.search(line):
+        elif match := RE_LOG_COPY.match(line):
             added_path = match.group(1)
             if is_ancestor(added_path, relative_path):
                 copy_from_path = match.group(2)
@@ -602,11 +639,31 @@ def get_svn_branch_base(target_path: str) -> str:
 
     return f"このパスは{date} r{revision}で新規作成されました。(派生ではない)"
 
+@mcp.tool()
+def get_create_branch_logs(target_path: str) -> str:
+    """
+    指定されたパスのSVNログから、ブランチ作成(フォルダcopy)に関する情報のみを出力します
+    出力フォーマットは以下
+    commit date and time | copy_to_path@revision | copy_from_path@base_revision
+    """
+    path = convert_target_path(target_path)
+    if path == None:
+        return f'指定されたパス{target_path}は見つかりませんでした'
+
+    relative_path = "/" + os.path.relpath(path, g_repo_url).replace("\\", "/")
+    print(f"Getting create branch logs for: {target_path} -> {relative_path}", file=sys.stderr)
+    text = run_command(f"svn log {path} -q -v")
+    logs = pick_up_dir_copy_logs(text)
+    if len(logs):
+        return "\n".join(logs)
+
+    return f"このパス({target_path})にはブランチは見つかりませんでした"
+
 
 @mcp.tool()
 def search_svn_logs(target_path: str, keyword: str, regex: bool = False, limit: int = 10, revision1: str = "HEAD", revision2: str = "1") -> str:
     """
-    指定されたSVNログを検索して、ヒットしたものを返します
+    指定されたパスのSVNログを検索して、ヒットしたものを返します
     limitで取得するログの最大数を指定できます。デフォルトは10です。
     revision1とrevision2でリビジョンの範囲を指定できます。デフォルトでは、revision1はHEAD、revision2は1となっています。
     regexがTrueの場合、keywordは正規表現として扱われます。デフォルトはFalseです。
@@ -726,18 +783,31 @@ def test_calls():
 
 #   result = get_svn_status()
 #   print(f"SVN status:\n{result}", file=sys.stderr)
-    result = get_svn_branch_base(".")
-    print(f"SVN branch base:\n{result}", file=sys.stderr)
-    result = get_svn_branch_base("branches/tools")
-    print(f"SVN branch base:\n{result}", file=sys.stderr)
-    result = get_svn_branch_base("branches/tools/mcp_redmine/mcp_redmine_b")
-    print(f"SVN branch base:\n{result}", file=sys.stderr)
-    result = get_svn_branch_base(".scripts/mcp_svn.py")
-    print(f"SVN branch base:\n{result}", file=sys.stderr)
-    result = get_svn_diff(".scripts/mcp_svn.py")
-    print(f"SVN diff:\n{result}", file=sys.stderr)
+#   result = get_svn_branch_base(".")
+#   print(f"SVN branch base:\n{result}", file=sys.stderr)
+#   result = get_svn_branch_base("branches/tools")
+#   print(f"SVN branch base:\n{result}", file=sys.stderr)
+#   result = get_svn_branch_base("branches/tools/mcp_redmine/mcp_redmine_b")
+#   print(f"SVN branch base:\n{result}", file=sys.stderr)
+#   result = get_svn_branch_base(".scripts/mcp_svn.py")
+#   print(f"SVN branch base:\n{result}", file=sys.stderr)
+#   result = get_svn_branch_base(".scripts/mcp_svna.py")
+#   print(f"SVN branch base:\n{result}", file=sys.stderr)
+#   result = get_svn_diff(".scripts/mcp_svn.py")
+#   print(f"SVN diff:\n{result}", file=sys.stderr)
+    result = get_create_branch_logs("branches")
+    print(f"get_create_branch_logs():\n{result}", file=sys.stderr)
 
     return
+
+def get_app_path():
+    if getattr(sys, 'frozen', False):
+        # EXEとして実行されている場合
+        return os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        # 通常のPythonスクリプトとして実行されている場合
+        return os.path.dirname(os.path.abspath(__file__))
+
 
 def read_credentials():
     """
@@ -746,12 +816,7 @@ def read_credentials():
     global g_username
     global g_password
 
-    try:
-        path = sys._MEIPASS
-    except AttributeError:
-        path = os.path.abspath(__file__)
-
-    path = path.replace(os.path.basename(path), "credentials.txt")
+    path = os.path.join(get_app_path(), "credentials.txt")
     print(f"Reading credentials from path: {path}", file=sys.stderr)
     if not os.path.exists(path):
         print(f"Credentials file not found", file=sys.stderr)
@@ -771,7 +836,7 @@ def read_credentials():
 def main():
     read_credentials()
     get_repo_url_internal()
-    test_calls()
+#   test_calls()
 
     mcp.run()
 
