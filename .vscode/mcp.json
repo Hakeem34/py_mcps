@@ -28,6 +28,13 @@
 			"args": [
 				"${workspaceFolder}/.scripts/mcp_confluence.py"
 			]
+		},
+		"mcp-excel": {
+			"type": "stdio",
+			"command": "python",
+			"args": [
+				"${workspaceFolder}/.scripts/mcp_excel.py"
+			]
 		}
 	},
 	"inputs": []
