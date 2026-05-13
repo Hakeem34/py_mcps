@@ -43,6 +43,8 @@ def read_credentials():
         for line in lines:
             if match := re.match(r"confluence_url\s*:\s*(\S+)", line):
                 g_opt_url = match.group(1)
+                if g_opt_url.endswith('.atlassian.net/'):
+                    g_opt_url += 'wiki'
             elif match := re.match(r"confluence_user\s*:\s*(\S+)", line):
                 g_opt_user = match.group(1)
             elif match := re.match(r"confluence_pass\s*:\s*(\S+)", line):
@@ -56,7 +58,7 @@ def read_credentials():
 def get_content_list(space_name) -> str:
     """
     """
-    url = f"{g_opt_url}/wiki/rest/api/content"
+    url = f"{g_opt_url}/rest/api/content"
     space_key = g_space_keys[space_name]
     response = requests.get(
         url,
@@ -89,7 +91,7 @@ def get_space_list() -> str:
     Confluenceのスペースのリストを取得します
     """
     global g_space_keys
-    space = f"{g_opt_url}/wiki/rest/api/space"
+    space = f"{g_opt_url}/rest/api/space"
 
     # ===== リクエスト =====
     response = requests.get(
@@ -118,7 +120,7 @@ def get_space_list() -> str:
     
     
 def test_v2_api():
-    url = f"{g_opt_url}/wiki/api/v2/pages"
+    url = f"{g_opt_url}/api/v2/pages"
 
     response = requests.get(
         url,
