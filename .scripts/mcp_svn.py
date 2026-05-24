@@ -1,10 +1,15 @@
 import os
 import re
 import sys
+import argparse
+import datetime
 import subprocess
 import dataclasses
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
+
+
+g_log_file = None
 
 
 @dataclasses.dataclass
@@ -45,6 +50,14 @@ g_search_log_stats = LogStats()
 # FastMCPのインスタンスを作成
 mcp = FastMCP()
 
+
+def print_log(text, file=sys.stderr):
+    print(text, file=sys.stderr)
+    if g_log_file:
+        print(text, file=g_log_file)
+        g_log_file.flush()
+
+
 def count_log_revisions(log_text: str) -> list:
     """
     SVNログのテキストから、リビジョンの数をカウントします。
@@ -79,7 +92,7 @@ def convert_revision_to_number(local_path: str, revision: str) -> int:
     有効なリビジョン指定でない場合は0を返します。
     """
    
-#   print(f"Converting local path: {local_path}, revision: {revision} to number", file=sys.stderr)
+#   print_log(f"Converting local path: {local_path}, revision: {revision} to number", file=sys.stderr)
     if revision.isdigit():
         return int(revision)
 
@@ -129,7 +142,7 @@ def try_command(command: str) -> str:
     except subprocess.CalledProcessError as e:
         return 1
     except Exception as e:
-        print(f"予期しないエラー: {str(e)}", file=sys.stderr)
+        print_log(f"予期しないエラー: {str(e)}", file=sys.stderr)
         return 1
 
 def search_svn_logs_internal(log_text: str, keyword: str, regex: bool = False) -> str:
@@ -184,7 +197,7 @@ def get_repo_url_internal() -> str:
         elif line.startswith("Working Copy Root Path:"):
             g_working_root = line.split("Working Copy Root Path:")[1].strip()
 
-    print(f"Repository URL: {g_repo_url}, Working Copy Root Path: {g_working_root}, Working URL: {g_working_url}", file=sys.stderr)
+    print_log(f"Repository URL: {g_repo_url}, Working Copy Root Path: {g_working_root}, Working URL: {g_working_url}", file=sys.stderr)
     return g_repo_url
 
 def get_svn_log_internal(path: str, optional_args: str = "") -> str:
@@ -207,12 +220,12 @@ def convert_target_path(path: str) -> str:
         path = path[1:]
  
     repository_url = g_working_url + "/" + path
-#   print(f"Trying working URL: {repository_url}", file=sys.stderr)
+#   print_log(f"Trying working URL: {repository_url}", file=sys.stderr)
     if try_command(f"svn info {repository_url}") == 0:
         return repository_url
     
     repository_url = g_repo_url + "/" + path
-#   print(f"Trying repository URL: {repository_url}", file=sys.stderr)
+#   print_log(f"Trying repository URL: {repository_url}", file=sys.stderr)
     if try_command(f"svn info {repository_url}") == 0:
         return repository_url
 
@@ -241,11 +254,11 @@ def get_svn_node_tree_internal(target_path: str, revision: str = "HEAD", include
     """
     node_kind = get_svn_node_kind(target_path, revision)
     if node_kind == "file":
-        print(f"Getting SVN node tree for file: {target_path} at revision: {revision}", file=sys.stderr)
+        print_log(f"Getting SVN node tree for file: {target_path} at revision: {revision}", file=sys.stderr)
         return None
 
     path = convert_target_path(target_path)
-#   print(f"Getting SVN node tree for directory: {target_path} at revision: {revision} with path: {path}, revision: {revision}, depth: {depth}", file=sys.stderr)
+#   print_log(f"Getting SVN node tree for directory: {target_path} at revision: {revision} with path: {path}, revision: {revision}, depth: {depth}", file=sys.stderr)
     node = None
     lines = get_svn_list_internal(path, revision).split('\n')
     if depth > 0:
@@ -254,21 +267,21 @@ def get_svn_node_tree_internal(target_path: str, revision: str = "HEAD", include
         next_depth = depth
 
     for line in lines:
-#       print(f"Processing list line: {line}", file=sys.stderr)
+#       print_log(f"Processing list line: {line}", file=sys.stderr)
         if match := RE_LIST_LINE_FILE.match(line):
             if include_files:
                 size = int(match.group(3))
                 node_revision = match.group(1)
                 name = match.group(7)
-#               print(f"Found file: {name} size: {size} revision: {revision}", file=sys.stderr)
+#               print_log(f"Found file: {name} size: {size} revision: {revision}", file=sys.stderr)
                 child_node = SVNNode(url=path + "/" + name, basename=name, type="file", size=size, revision=node_revision)
                 node.children.append(child_node)
         elif match := RE_LIST_LINE_DIR.match(line):
             node_revision = match.group(1)
             name = match.group(6)
-#           print(f"Found directory: {name} revision: {node_revision}", file=sys.stderr)
+#           print_log(f"Found directory: {name} revision: {node_revision}", file=sys.stderr)
             if (name != r"."):
-#               print(f"Descending into directory: {name} revision: {node_revision}", file=sys.stderr)
+#               print_log(f"Descending into directory: {name} revision: {node_revision}", file=sys.stderr)
                 if next_depth > 0 or next_depth == -1:
                     child_node = get_svn_node_tree_internal('/'.join([target_path, name]), revision, include_files, next_depth)
                     node.children.append(child_node)
@@ -276,7 +289,7 @@ def get_svn_node_tree_internal(target_path: str, revision: str = "HEAD", include
                     child_node = SVNNode(url=path + "/" + name, basename=name, type="directory", revision=node_revision)
                     node.children.append(child_node)
             else:
-#               print(f"Found current directory entry: {name} revision: {node_revision}", file=sys.stderr)
+#               print_log(f"Found current directory entry: {name} revision: {node_revision}", file=sys.stderr)
                 node = SVNNode(url=path, basename=os.path.basename(target_path), type="directory", revision=node_revision)
 
     return node
@@ -286,7 +299,7 @@ def format_svn_tree(node: SVNNode, prefix: str = "") -> str:
     SVNノードのツリー構造をテキスト形式でフォーマットします。
     """
     lines = []
-#   print(f"Formatting node: {node.basename} type: {node.type} revision: {node.revision} size: {node.size}", file=sys.stderr)
+#   print_log(f"Formatting node: {node.basename} type: {node.type} revision: {node.revision} size: {node.size}", file=sys.stderr)
     if node.type == "directory":
         lines.append(f"{prefix}{node.basename}")
         for child in node.children:
@@ -294,7 +307,7 @@ def format_svn_tree(node: SVNNode, prefix: str = "") -> str:
     else:
         lines.append(f"{prefix}{node.basename}")
 
-#   print(f"Formatted lines for node {node.basename}:\n", file=sys.stderr)
+#   print_log(f"Formatted lines for node {node.basename}:\n", file=sys.stderr)
     return "\n".join(lines)
 
 def match_svn_node_by_name(node: SVNNode, name_pattern: str) -> list:
@@ -325,7 +338,7 @@ def pick_up_dir_copy_logs(log_text: str) -> list:
             if (not_add_log == False) and (copy_from_path != ""):
                 if (get_svn_node_kind(added_path, revision) == "directory"):
                     text = f"{date} | {added_path}@{revision} | {copy_from_path}@{copy_from_revision}" 
-                    print(text, file=sys.stderr)
+                    print_log(text, file=sys.stderr)
                     logs.append(text)
 
             copy_from_path = ""
@@ -341,17 +354,17 @@ def pick_up_dir_copy_logs(log_text: str) -> list:
             copy_from_path = match.group(2)
             copy_from_revision = match.group(3)
         else:
-#           print(log)
+#           print_log(log)
             pass
     return logs
 
 @mcp.tool()
 def search_svn_nodes(target_path: str, revision: str = "HEAD", file_name: str = "*", depth: int = -1) -> str:
     """
-    指定されたパスのSVNノードを検索します。
-    target_pathはリポジトリ上の相対パスもしくは作業コピー上の相対パスで指定します。
+    Searches for SVN nodes at the specified path.
+    target_path must be absolute path or full URL.
     """
-    print(f"Searching SVN nodes for: {target_path} at revision: {revision}, file_name: {file_name}, depth: {depth}", file=sys.stderr)
+    print_log(f"Searching SVN nodes for: {target_path} at revision: {revision}, file_name: {file_name}, depth: {depth}", file=sys.stderr)
     target_path = target_path.removesuffix('/')
     node = get_svn_node_tree_internal(target_path, revision, True, depth)
     if node is None:
@@ -359,7 +372,7 @@ def search_svn_nodes(target_path: str, revision: str = "HEAD", file_name: str = 
 
     matched_nodes = match_svn_node_by_name(node, file_name)
 #   for matched_node in matched_nodes:
-#       print(f"Matched node: {matched_node.url} type: {matched_node.type} revision: {matched_node.revision} size: {matched_node.size}", file=sys.stderr)    
+#       print_log(f"Matched node: {matched_node.url} type: {matched_node.type} revision: {matched_node.revision} size: {matched_node.size}", file=sys.stderr)    
         
     path = convert_target_path(target_path)
     paths = [matched_node.url.replace(path, target_path, 1) for matched_node in matched_nodes]
@@ -368,15 +381,16 @@ def search_svn_nodes(target_path: str, revision: str = "HEAD", file_name: str = 
 @mcp.tool()
 def get_svn_tree(target_path: str, revision: str = "HEAD", include_files: bool = False, depth: int = -1) -> str:
     """
-    指定されたパスのSVNツリー構造を取得します。
+    Retrieves the SVN tree structure for the specified path.
+    target_path must be absolute path or full URL.
     """
-    print(f"Getting SVN tree for: {target_path} at revision: {revision}, include_files: {include_files}, depth: {depth}", file=sys.stderr)
+    print_log(f"Getting SVN tree for: {target_path} at revision: {revision}, include_files: {include_files}, depth: {depth}", file=sys.stderr)
     target_path = target_path.removesuffix('/')
     node = get_svn_node_tree_internal(target_path, revision, include_files, depth)
     if node is None:
         return f"指定されたパスはファイルです: {target_path}"
 
-#   print(f"SVN tree for {target_path}:\n{node}", file=sys.stderr)
+#   print_log(f"SVN tree for {target_path}:\n{node}", file=sys.stderr)
     return format_svn_tree(node)
 
 
@@ -384,10 +398,11 @@ def get_svn_tree(target_path: str, revision: str = "HEAD", include_files: bool =
 @mcp.tool()
 def get_svn_node_size(target_path: str, revision: str = "HEAD") -> str:
     """
-    指定されたパスのSVNノードのサイズを取得します。
+    Retrieves the size of an SVN node at the specified path.
+    target_path must be absolute path or full URL.
     """
     path = convert_target_path(target_path)
-    print(f"Getting SVN node size for: {target_path}", file=sys.stderr)
+    print_log(f"Getting SVN node size for: {target_path}", file=sys.stderr)
     if get_svn_node_kind(target_path, revision) == "directory":
         return "0"
 
@@ -398,16 +413,17 @@ def get_svn_node_size(target_path: str, revision: str = "HEAD") -> str:
             size = match.group(1)
             return size
         
-    print(f"Size not found in SVN info output for: {target_path}", file=sys.stderr)
+    print_log(f"Size not found in SVN info output for: {target_path}", file=sys.stderr)
     return "Size not found"
 
 @mcp.tool()
 def get_svn_node_kind(target_path: str, revision: str = "HEAD") -> str:
     """
-    指定されたパスが存在するか、存在する場合はノードの種類を取得します。
+    Retrieves the kind of a node at the specified path, or None if it doesn't exist.
+    target_path must be absolute path or full URL.
     """
     path = convert_target_path(target_path)
-#   print(f"Getting SVN node kind for: {target_path}", file=sys.stderr)
+#   print_log(f"Getting SVN node kind for: {target_path}", file=sys.stderr)
     result = run_command(f"svn info {path}")
     for line in result.split('\n'):
         if line.startswith("Node Kind:"):
@@ -417,13 +433,14 @@ def get_svn_node_kind(target_path: str, revision: str = "HEAD") -> str:
 @mcp.tool()
 def blame_svn_file(target_path: str, revision: str = "HEAD", start_line: int = 1, end_line: int = 0) -> str:
     """
-    指定されたパスのSVNファイルのblame情報を取得します。
-    blame情報は、各行の最終変更リビジョンと著者を含みます。
-    start_lineとend_lineを指定することで、ファイルの特定の行範囲を取得できます。
-    マイナス値を指定すると末尾からの行数を表します。end_lineが0の場合は、ファイルの末尾までを取得します。
+    Retrieves the blame information for an SVN file at the specified path.
+    target_path must be absolute path or full URL.
+    The blame information includes the last change revision and author for each line.
+    By specifying start_line and end_line, you can retrieve a specific line range.
+    A negative value specifies the number of lines from the end. If end_line is 0, the content up to the end of the file is retrieved.
     """
     path = convert_target_path(target_path)
-    print(f"Getting SVN blame for: {target_path} at revision: {revision}, start_line: {start_line}, end_line: {end_line}", file=sys.stderr)
+    print_log(f"Getting SVN blame for: {target_path} at revision: {revision}, start_line: {start_line}, end_line: {end_line}", file=sys.stderr)
     text = run_command(f"svn blame {path}@{revision}")
     if start_line > 0:
         start = max(0, start_line - 1)
@@ -439,12 +456,13 @@ def blame_svn_file(target_path: str, revision: str = "HEAD", start_line: int = 1
 @mcp.tool()
 def cat_svn_file(target_path: str, revision: str = "HEAD", start_line: int = 1, end_line: int = 0) -> str:
     """
-    指定されたパスのSVNファイルの内容を取得します。
-    start_lineとend_lineを指定することで、ファイルの特定の行範囲を取得できます。
-    マイナス値を指定すると末尾からの行数を表します。end_lineが0の場合は、ファイルの末尾までを取得します。
+    Retrieves the content of an SVN file at the specified path.
+    target_path must be absolute path or full URL.
+    By specifying start_line and end_line, you can retrieve a specific line range.
+    A negative value specifies the number of lines from the end. If end_line is 0, the content up to the end of the file is retrieved.
     """
     path = convert_target_path(target_path)
-    print(f"Getting SVN file content for: {target_path} at revision: {revision} start_line: {start_line} end_line: {end_line}", file=sys.stderr)
+    print_log(f"Getting SVN file content for: {target_path} at revision: {revision} start_line: {start_line} end_line: {end_line}", file=sys.stderr)
     text = run_command(f"svn cat {path}@{revision}")
     if start_line > 0:
         start = max(0, start_line - 1)
@@ -460,7 +478,8 @@ def cat_svn_file(target_path: str, revision: str = "HEAD", start_line: int = 1, 
 @mcp.tool()
 def export_svn_file(target_path: str, revision: str = "HEAD", output_path: str = "_tmp_export") -> str:
     """
-    指定されたパスをoutput_pathにエクスポートします。
+    Exports the specified path to the given output_path.
+    target_path must be absolute path or full URL.
     """
     if not is_safe_path(output_path):
         return f"安全でないパスが指定されました: {output_path}"
@@ -472,7 +491,7 @@ def export_svn_file(target_path: str, revision: str = "HEAD", output_path: str =
         if os.path.dirname(output_path) == "":
             output_path = os.path.join(output_path, os.path.basename(target_path))
 
-    print(f"Exporting SVN file: {target_path} at revision: {revision} to output path: {output_path}({os.path.dirname(output_path)})", file=sys.stderr)
+    print_log(f"Exporting SVN file: {target_path} at revision: {revision} to output path: {output_path}({os.path.dirname(output_path)})", file=sys.stderr)
     os.makedirs(os.path.dirname(output_path), exist_ok=True) if output_path else None
     result = run_command(f"svn export {path}@{revision} {output_path}")
     return result
@@ -480,62 +499,70 @@ def export_svn_file(target_path: str, revision: str = "HEAD", output_path: str =
 @mcp.tool()
 def get_svn_diff_by_revision(target_path: str, revision1: str, revision2: str) -> str:
     """
-    指定されたパスのリビジョン間の差分を取得します。
+    Retrieves the difference between two revisions of a specified path.
+    target_path must be absolute path or full URL.
     """
     path = convert_target_path(target_path)
-    print(f"Getting SVN diff for: {target_path} between revisions: {revision1} and {revision2}", file=sys.stderr)
+    print_log(f"Getting SVN diff for: {target_path} between revisions: {revision1} and {revision2}", file=sys.stderr)
     return run_command(f"svn diff {path}@{revision1} {path}@{revision2}")
 
 @mcp.tool()
 def get_svn_diff_by_url(target_path1: str, target_path2: str, revision1="HEAD", revision2="HEAD") -> str:
     """
-    指定された二つのパスの差分を取得します。
+    Retrieves the difference between two specified paths.
+    target_paths must be absolute path or full URL.
     """
     path1 = convert_target_path(target_path1)
     path2 = convert_target_path(target_path2)
-    print(f"Getting SVN diff for: {path1}@{revision1} {path2}@{revision2}", file=sys.stderr)
+    print_log(f"Getting SVN diff for: {path1}@{revision1} {path2}@{revision2}", file=sys.stderr)
     return run_command(f"svn diff {path1}@{revision1} {path2}@{revision2}")
 
 @mcp.tool()
 def get_svn_diff(target_path: str) -> str:
     """
-    指定されたローカルパスのwork/baseの差分を取得します。
+    Retrieves the difference between the work and base versions of a specified local path.
+    target_path must be absolute path or full URL.
     """
-    print(f"Getting SVN diff for: {target_path}", file=sys.stderr)
+    print_log(f"Getting SVN diff for: {target_path}", file=sys.stderr)
     return run_command(f'svn diff --internal-diff -x "-p -U 0" {target_path}')
 
 @mcp.tool()
 def get_svn_commit_history(target_path: str) -> str:
     """
-    リポジトリ内の指定されたパスのSVNコミット履歴(Revisionのみ)を取得します。
+    Retrieves the SVN commit history (Revisions only) for the specified path in the repository.
+    target_path must be absolute path or full URL.
     """
     result = []
-    print(f"Getting SVN commit history for: {target_path}", file=sys.stderr)
+    print_log(f"Getting SVN commit history for: {target_path}", file=sys.stderr)
     path = convert_target_path(target_path)
     log_result = get_svn_log_internal(f"{path}", "-q")
     for line in log_result.split('\n'):
-#       print(f"Processing log line: {line}", file=sys.stderr)
+#       print_log(f"Processing log line: {line}", file=sys.stderr)
         revision_match = RE_REVISION.match(line)
         if revision_match:
             result.append(revision_match.group(1))
 
-#   print(f"Found revisions: {result}", file=sys.stderr)
-    return "\n".join(result)
+    print_log(f"Found revisions: {result}", file=sys.stderr)
+    if len(result) == 0:
+        return "No revisions found"
+    return f"Found revisions: {', '.join(result)}"
 
 @mcp.tool()
-def get_svn_commit_log(revision: str) -> str:
+def get_svn_commit_log(target_url: str, revision: str) -> str:
     """
-    SVNコミットログ(詳細)をリビジョン指定で全文取得します。
+    Retrieves the full SVN commit log (detailed) for a specified revision.
+    target_url must be full URL.
     """
-    print(f"Getting SVN log for revision: {revision}", file=sys.stderr)
+    print_log(f"Getting SVN log for revision: {revision}", file=sys.stderr)
     return get_svn_log_internal(f"{g_repo_url}", f"-v -r {revision}")
 
 @mcp.tool()
 def get_svn_logs(target_path: str, limit: int = 10, revision1: str = "HEAD", revision2: str = "1") -> str:
     """
-    指定されたパスのSVNログを取得します。
-    limitで取得するログの最大数を指定できます。デフォルトは10です。
-    revision1とrevision2でリビジョンの範囲を指定できます。デフォルトでは、revision1はHEAD、revision2は1となっています。
+    Retrieves the SVN logs for the specified path. 
+    target_path must be absolute path or full URL.
+    You can set a limit for the maximum number of logs to retrieve. 
+    The revision range can be specified with revision1 and revision2. By default, revision1 is HEAD and revision2 is 1.
     """
     global g_get_log_stats
 
@@ -545,7 +572,7 @@ def get_svn_logs(target_path: str, limit: int = 10, revision1: str = "HEAD", rev
     g_get_log_stats.revision2 = revision2
 
     path = convert_target_path(target_path)
-    print(f"Getting SVN logs for: {target_path} with limit: {limit}, revisions: {revision1}:{revision2}", file=sys.stderr)
+    print_log(f"Getting SVN logs for: {target_path} with limit: {limit}, revisions: {revision1}:{revision2}", file=sys.stderr)
     text = get_svn_log_internal(path, f"-v -l {limit} -r {revision1}:{revision2}")
     update_log_stats(g_get_log_stats, text)
     return text
@@ -553,7 +580,7 @@ def get_svn_logs(target_path: str, limit: int = 10, revision1: str = "HEAD", rev
 @mcp.tool()
 def get_svn_logs_continue() -> str:
     """
-    直前のget_svn_logsの続きからログを取得します
+    Continues retrieving logs from the previous call to get_svn_logs.
     """
     global g_get_log_stats
 
@@ -571,7 +598,7 @@ def get_svn_logs_continue() -> str:
     else:
         start_revision = g_get_log_stats.last_revision - 1
 
-    print(f"Continuing to get older SVN logs for: {g_get_log_stats.target_path} with limit: {g_get_log_stats.limit}, revisions: {start_revision}:{g_get_log_stats.revision2}", file=sys.stderr)
+    print_log(f"Continuing to get older SVN logs for: {g_get_log_stats.target_path} with limit: {g_get_log_stats.limit}, revisions: {start_revision}:{g_get_log_stats.revision2}", file=sys.stderr)
     text = get_svn_log_internal(convert_target_path(g_get_log_stats.target_path), f"-v -l {g_get_log_stats.limit} -r {start_revision}:{g_get_log_stats.revision2}")
     update_log_stats(g_get_log_stats, text)
     return text
@@ -579,9 +606,10 @@ def get_svn_logs_continue() -> str:
 @mcp.tool()
 def get_svn_status() -> str:
     """
-    SVN作業コピーのステータスを取得して返します
+    Retrieves and returns the status of the SVN working copy.
+    target_path must be absolute path or full URL.
     """
-    print(f"Getting SVN status for: {g_working_root}", file=sys.stderr)
+    print_log(f"Getting SVN status for: {g_working_root}", file=sys.stderr)
     return run_command(f"svn status {g_working_root}")
 
 
@@ -602,14 +630,15 @@ def is_ancestor(path_A, path_B):
 @mcp.tool()
 def get_svn_branch_base(target_path: str) -> str:
     """
-    指定されたパスのSVNブランチ派生元を取得します。
+    Retrieves the SVN branch base for the specified path.
+    target_path must be absolute path or full URL.
     """
     path = convert_target_path(target_path)
     if path == None:
         return f'指定されたパス{target_path}は見つかりませんでした'
 
     relative_path = "/" + os.path.relpath(path, g_repo_url).replace("\\", "/")
-    print(f"Getting SVN branch base for: {target_path} -> {relative_path}", file=sys.stderr)
+    print_log(f"Getting SVN branch base for: {target_path} -> {relative_path}", file=sys.stderr)
     text = run_command(f"svn log {path} --stop-on-copy -q -v")
     revision = "unknown"
     author = "unknown"
@@ -618,7 +647,7 @@ def get_svn_branch_base(target_path: str) -> str:
     copy_from_revision = ""
     not_add_log = False
     for line in text.split('\n'):
-#       print(f"Processing log line for branch base: {line}", file=sys.stderr)
+#       print_log(f"Processing log line for branch base: {line}", file=sys.stderr)
         if match := RE_LOG_SEPARATOR.match(line):
             if (not_add_log == False) and (copy_from_path != ""):
                 return f"このパスは{date} r{revision}で{copy_from_path}のr{copy_from_revision}から派生しました"
@@ -642,8 +671,9 @@ def get_svn_branch_base(target_path: str) -> str:
 @mcp.tool()
 def get_create_branch_logs(target_path: str) -> str:
     """
-    指定されたパスのSVNログから、ブランチ作成(フォルダcopy)に関する情報のみを出力します
-    出力フォーマットは以下
+    Extracts only branch creation (folder copy) information from the SVN logs.
+    target_path must be absolute path or full URL.
+    Output format:
     commit date and time | copy_to_path@revision | copy_from_path@base_revision
     """
     path = convert_target_path(target_path)
@@ -651,7 +681,7 @@ def get_create_branch_logs(target_path: str) -> str:
         return f'指定されたパス{target_path}は見つかりませんでした'
 
     relative_path = "/" + os.path.relpath(path, g_repo_url).replace("\\", "/")
-    print(f"Getting create branch logs for: {target_path} -> {relative_path}", file=sys.stderr)
+    print_log(f"Getting create branch logs for: {target_path} -> {relative_path}", file=sys.stderr)
     text = run_command(f"svn log {path} -q -v")
     logs = pick_up_dir_copy_logs(text)
     if len(logs):
@@ -663,10 +693,11 @@ def get_create_branch_logs(target_path: str) -> str:
 @mcp.tool()
 def search_svn_logs(target_path: str, keyword: str, regex: bool = False, limit: int = 10, revision1: str = "HEAD", revision2: str = "1") -> str:
     """
-    指定されたパスのSVNログを検索して、ヒットしたものを返します
-    limitで取得するログの最大数を指定できます。デフォルトは10です。
-    revision1とrevision2でリビジョンの範囲を指定できます。デフォルトでは、revision1はHEAD、revision2は1となっています。
-    regexがTrueの場合、keywordは正規表現として扱われます。デフォルトはFalseです。
+    Searches SVN logs for a specified path and returns matching logs.
+    target_path must be absolute path or full URL.
+    You can set a limit for the maximum number of logs to retrieve. Default is 10.
+    The revision range can be specified with revision1 and revision2. By default, revision1 is HEAD and revision2 is 1.
+    If regex is True, keyword is treated as a regular expression. Default is False.
     """
     global g_search_log_stats
 
@@ -678,7 +709,7 @@ def search_svn_logs(target_path: str, keyword: str, regex: bool = False, limit: 
     g_search_log_stats.regex = regex
 
     path = convert_target_path(target_path)
-    print(f"Searching SVN logs for: {target_path} with keyword: {keyword}, limit: {limit}, revisions: {revision1}:{revision2}", file=sys.stderr)
+    print_log(f"Searching SVN logs for: {target_path} with keyword: {keyword}, limit: {limit}, revisions: {revision1}:{revision2}", file=sys.stderr)
     text = get_svn_log_internal(path, f"-v -l {limit} -r {revision1}:{revision2}")
     update_log_stats(g_search_log_stats, text)
     matched_logs = search_svn_logs_internal(text, keyword, regex)
@@ -687,7 +718,7 @@ def search_svn_logs(target_path: str, keyword: str, regex: bool = False, limit: 
 @mcp.tool()
 def search_svn_logs_continue() -> str:
     """
-    直前のsearch_svn_logsの続きからログを取得して検索します
+    Continues retrieving logs and searching from the previous call to search_svn_logs.
     """
     global g_search_log_stats
 
@@ -705,7 +736,7 @@ def search_svn_logs_continue() -> str:
     else:
         start_revision = g_search_log_stats.last_revision - 1
 
-    print(f"Continuing to search older SVN logs for: {g_search_log_stats.target_path} with keyword: {g_search_log_stats.keyword}, limit: {g_search_log_stats.limit}, revisions: {start_revision}:{g_search_log_stats.revision2}", file=sys.stderr)
+    print_log(f"Continuing to search older SVN logs for: {g_search_log_stats.target_path} with keyword: {g_search_log_stats.keyword}, limit: {g_search_log_stats.limit}, revisions: {start_revision}:{g_search_log_stats.revision2}", file=sys.stderr)
     text = get_svn_log_internal(convert_target_path(g_search_log_stats.target_path), f"-v -l {g_search_log_stats.limit} -r {start_revision}:{g_search_log_stats.revision2}")
     update_log_stats(g_search_log_stats, text)
     matched_logs = search_svn_logs_internal(text, g_search_log_stats.keyword, g_search_log_stats.regex)
@@ -714,89 +745,91 @@ def search_svn_logs_continue() -> str:
 @mcp.tool()
 def get_svn_info() -> str:
     """
-    SVNの情報を取得します。
+    Retrieves SVN information.
+    target_path must be absolute path or full URL.
     """
     return run_command("svn info")
 
 @mcp.tool()
 def get_svn_list(target_path: str, revision: str = "HEAD") -> str:
     """
-    SVNリスト(詳細情報付き)を取得します。
-    target_pathはリポジトリ上の相対パスもしくは作業コピー上の相対パスで指定します。
+    Retrieves a detailed list of SVN nodes.
+    target_path must be absolute path or full URL.
+    The target_path can be specified as a relative path from the repository or a relative path from the working copy.
     """
 
-    print(f"Getting SVN list for: {target_path} at revision: {revision}", file=sys.stderr)
+    print_log(f"Getting SVN list for: {target_path} at revision: {revision}", file=sys.stderr)
     path = convert_target_path(target_path)
     return get_svn_list_internal(path, revision)
 
 def test_calls():
 #   result = get_svn_commit_history(".scripts/mcp_svn.py")
-#   print(f"SVN commit history:\n{result}", file=sys.stderr)
+#   print_log(f"SVN commit history:\n{result}", file=sys.stderr)
 #   size = get_svn_node_size(".scripts/mcp_svn.py")
-#   print(f"Size of .scripts/mcp_svn.py: {size}", file=sys.stderr)
+#   print_log(f"Size of .scripts/mcp_svn.py: {size}", file=sys.stderr)
 #   size = get_svn_node_size(".scripts")
-#   print(f"Size of .scripts: {size}", file=sys.stderr)
+#   print_log(f"Size of .scripts: {size}", file=sys.stderr)
 #   result =get_svn_tree(".", revision="HEAD", include_files=True, depth=2)
-#   print(f"SVN tree:\n{result}", file=sys.stderr)
+#   print_log(f"SVN tree:\n{result}", file=sys.stderr)
 #   result =get_svn_tree("./", revision="HEAD", include_files=True, depth=1)
-#   print(f"SVN tree:\n{result}", file=sys.stderr)
+#   print_log(f"SVN tree:\n{result}", file=sys.stderr)
 #   result =get_svn_tree(".", revision="HEAD", include_files=True, depth=0)
-#   print(f"SVN tree:\n{result}", file=sys.stderr)
+#   print_log(f"SVN tree:\n{result}", file=sys.stderr)
 #   result =get_svn_tree(".", revision="HEAD", include_files=True, depth=-1)
-#   print(f"SVN tree:\n{result}", file=sys.stderr)
+#   print_log(f"SVN tree:\n{result}", file=sys.stderr)
 #   result =get_svn_tree("trunk", revision="HEAD", include_files=False, depth=2)
-#   print(f"SVN tree:\n{result}", file=sys.stderr)
+#   print_log(f"SVN tree:\n{result}", file=sys.stderr)
 #   result = search_svn_nodes("trunk/tools", revision="HEAD", file_name="*.py", depth=3)
-#   print(f"Search result:\n{result}", file=sys.stderr)
+#   print_log(f"Search result:\n{result}", file=sys.stderr)
 #   result = search_svn_logs(".", keyword="refs #", regex=False, limit=10)
-#   print(f"Search result:\n{result}", file=sys.stderr)
+#   print_log(f"Search result:\n{result}", file=sys.stderr)
 #   result = search_svn_logs(".", keyword=r"refs #\d+", regex=True, limit=10)
-#   print(f"Search result:\n{result}", file=sys.stderr)
+#   print_log(f"Search result:\n{result}", file=sys.stderr)
 
 #   revision = convert_revision_to_number(".", "HEAD")
-#   print(f"HEAD revision number: {revision}", file=sys.stderr)
+#   print_log(f"HEAD revision number: {revision}", file=sys.stderr)
 #   revision = convert_revision_to_number(".", "BASE")
-#   print(f"BASE revision number: {revision}", file=sys.stderr)
+#   print_log(f"BASE revision number: {revision}", file=sys.stderr)
 #   revision = convert_revision_to_number(".", " PREV")
-#   print(f"PREV revision number: {revision}", file=sys.stderr)
+#   print_log(f"PREV revision number: {revision}", file=sys.stderr)
 #   revision = convert_revision_to_number(".", "COMMITTED")
-#   print(f"COMMITTED revision number: {revision}", file=sys.stderr)
+#   print_log(f"COMMITTED revision number: {revision}", file=sys.stderr)
 #   revision = convert_revision_to_number(".", "{2025-05-04}")
-#   print(f"2025-05-04 revision number: {revision}", file=sys.stderr)
+#   print_log(f"2025-05-04 revision number: {revision}", file=sys.stderr)
 #   revision = convert_revision_to_number(".", "{2026-05-04}")
-#   print(f"2026-05-04 revision number: {revision}", file=sys.stderr)
+#   print_log(f"2026-05-04 revision number: {revision}", file=sys.stderr)
 #   revision = convert_revision_to_number(".", "Rev.1234")
-#   print(f"Rev.1234 revision number: {revision}", file=sys.stderr)
+#   print_log(f"Rev.1234 revision number: {revision}", file=sys.stderr)
 
 #   result = get_svn_logs(".", limit=10, revision1="HEAD", revision2="1")
-#   print(f"SVN logs:\n{result}", file=sys.stderr)
+#   print_log(f"SVN logs:\n{result}", file=sys.stderr)
 #   result = get_svn_logs_continue()
-#   print(f"SVN logs continue1:\n{result}", file=sys.stderr)
+#   print_log(f"SVN logs continue1:\n{result}", file=sys.stderr)
 #   result = get_svn_logs_continue()
-#   print(f"SVN logs continue2:\n{result}", file=sys.stderr)
+#   print_log(f"SVN logs continue2:\n{result}", file=sys.stderr)
 #   result = get_svn_logs_continue()
-#   print(f"SVN logs continue3:\n{result}", file=sys.stderr)
+#   print_log(f"SVN logs continue3:\n{result}", file=sys.stderr)
 #   result = get_svn_logs_continue()
-#   print(f"SVN logs continue4:\n{result}", file=sys.stderr)
+#   print_log(f"SVN logs continue4:\n{result}", file=sys.stderr)
 #   result = get_svn_logs_continue()
-#   print(f"SVN logs continue5:\n{result}", file=sys.stderr)
+#   print_log(f"SVN logs continue5:\n{result}", file=sys.stderr)
 
 #   result = get_svn_status()
-#   print(f"SVN status:\n{result}", file=sys.stderr)
+#   print_log(f"SVN status:\n{result}", file=sys.stderr)
 #   result = get_svn_branch_base(".")
-#   print(f"SVN branch base:\n{result}", file=sys.stderr)
+#   print_log(f"SVN branch base:\n{result}", file=sys.stderr)
 #   result = get_svn_branch_base("branches/tools")
-#   print(f"SVN branch base:\n{result}", file=sys.stderr)
+#   print_log(f"SVN branch base:\n{result}", file=sys.stderr)
 #   result = get_svn_branch_base("branches/tools/mcp_redmine/mcp_redmine_b")
-#   print(f"SVN branch base:\n{result}", file=sys.stderr)
+#   print_log(f"SVN branch base:\n{result}", file=sys.stderr)
 #   result = get_svn_branch_base(".scripts/mcp_svn.py")
-#   print(f"SVN branch base:\n{result}", file=sys.stderr)
+#   print_log(f"SVN branch base:\n{result}", file=sys.stderr)
 #   result = get_svn_branch_base(".scripts/mcp_svna.py")
-#   print(f"SVN branch base:\n{result}", file=sys.stderr)
+#   print_log(f"SVN branch base:\n{result}", file=sys.stderr)
 #   result = get_svn_diff(".scripts/mcp_svn.py")
-#   print(f"SVN diff:\n{result}", file=sys.stderr)
+#   print_log(f"SVN diff:\n{result}", file=sys.stderr)
     result = get_create_branch_logs("branches")
-    print(f"get_create_branch_logs():\n{result}", file=sys.stderr)
+    print_log(f"get_create_branch_logs():\n{result}", file=sys.stderr)
 
     return
 
@@ -817,9 +850,9 @@ def read_credentials():
     global g_password
 
     path = os.path.join(get_app_path(), "credentials.txt")
-    print(f"Reading credentials from path: {path}", file=sys.stderr)
+    print_log(f"Reading credentials from path: {path}", file=sys.stderr)
     if not os.path.exists(path):
-        print(f"Credentials file not found", file=sys.stderr)
+        print_log(f"Credentials file not found", file=sys.stderr)
         return
 
     with open(path, "r") as f:
@@ -830,15 +863,52 @@ def read_credentials():
             elif match := re.match(r"svn_password\s*:\s*(\S+)", line):
                 g_password = match.group(1)
 
-    print(f"Read credentials: username={g_username}", file=sys.stderr)
+    print_log(f"Read credentials: username={g_username}", file=sys.stderr)
     return
 
+
+def create_log_file():
+    global g_log_file
+
+    log_path = os.path.join(get_app_path(), "mcplog")
+    os.makedirs(log_path, exist_ok = True)
+
+    now = datetime.datetime.now()
+    time_stamp = now.strftime('%Y%m%d_%H%M%S')
+    log_path = os.path.join(log_path, "mcp_svn_" + time_stamp + ".log")
+    g_log_file = open(log_path, "w", encoding="utf-8")
+
+
+def get_code_work_space():
+    import psutil
+
+    for proc in psutil.process_iter(['name', 'cmdline']):
+        try:
+            if "Code.exe" in proc.info['name']:
+                print_log(proc.info['cmdline'])
+        except:
+            pass
+
 def main():
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("-v", "--verbose", action='store_true')
+    args = parser.parse_args()
+#   print_log(args.verbose, file=sys.stderr)
+
+    if args.verbose:
+        create_log_file()
+
+    get_code_work_space()
+    print_log(f"Current working directory: {os.getcwd()}")
     read_credentials()
     get_repo_url_internal()
 #   test_calls()
 
     mcp.run()
+
+    if g_log_file:
+        print_log("Server terminated.", file=sys.stderr)
+        g_log_file.close()
 
 
 
