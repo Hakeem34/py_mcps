@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "mcp_svn": {
+      "command": "python.exe",
+      "args": [
+        "C:/src/tools/py_mcps/py_mcps/.scripts/mcp_svn.py",
+        "--verbose"
+      ],
+      "env": {},
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}
