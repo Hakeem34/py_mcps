@@ -364,7 +364,7 @@ def pick_up_dir_copy_logs(log_text: str) -> list:
 def search_svn_nodes(target_path: str, revision: str = "HEAD", file_name: str = "*", depth: int = -1) -> str:
     """
     Searches for SVN nodes at the specified path.
-    target_path can be specified as a relative path from the repository or the working copy.
+    Specify the target_path as a relative path within the repository or the working copy.
     """
     print_log(f"Searching SVN nodes for: {target_path} at revision: {revision}, file_name: {file_name}, depth: {depth}", file=sys.stderr)
     target_path = target_path.removesuffix('/')
@@ -384,6 +384,7 @@ def search_svn_nodes(target_path: str, revision: str = "HEAD", file_name: str = 
 def get_svn_tree(target_path: str, revision: str = "HEAD", include_files: bool = False, depth: int = -1) -> str:
     """
     Retrieves the SVN tree structure for the specified path.
+    Specify the target_path as a relative path within the repository or the working copy.
     """
     print_log(f"Getting SVN tree for: {target_path} at revision: {revision}, include_files: {include_files}, depth: {depth}", file=sys.stderr)
     target_path = target_path.removesuffix('/')
@@ -400,6 +401,8 @@ def get_svn_tree(target_path: str, revision: str = "HEAD", include_files: bool =
 def get_svn_node_size(target_path: str, revision: str = "HEAD") -> str:
     """
     Retrieves the size of an SVN node at the specified path.
+    Specify the target_path as a relative path within the repository or the working copy.
+    If the node is a directory, the size is returned as 0.
     """
     path = convert_target_path(target_path)
     print_log(f"Getting SVN node size for: {target_path}", file=sys.stderr)
@@ -420,6 +423,8 @@ def get_svn_node_size(target_path: str, revision: str = "HEAD") -> str:
 def get_svn_node_kind(target_path: str, revision: str = "HEAD") -> str:
     """
     Retrieves the kind of a node at the specified path, or None if it doesn't exist.
+    Specify the target_path as a relative path within the repository or the working copy.
+    The return value is "file", "directory", or "non-existent".
     """
     path = convert_target_path(target_path)
 #   print_log(f"Getting SVN node kind for: {target_path}", file=sys.stderr)
@@ -433,6 +438,7 @@ def get_svn_node_kind(target_path: str, revision: str = "HEAD") -> str:
 def blame_svn_file(target_path: str, revision: str = "HEAD", start_line: int = 1, end_line: int = 0) -> str:
     """
     Retrieves the blame information for an SVN file at the specified path.
+    Specify the target_path as a relative path within the repository or the working copy.
     The blame information includes the last change revision and author for each line.
     By specifying start_line and end_line, you can retrieve a specific line range.
     A negative value specifies the number of lines from the end. If end_line is 0, the content up to the end of the file is retrieved.
@@ -455,6 +461,7 @@ def blame_svn_file(target_path: str, revision: str = "HEAD", start_line: int = 1
 def cat_svn_file(target_path: str, revision: str = "HEAD", start_line: int = 1, end_line: int = 0) -> str:
     """
     Retrieves the content of an SVN file at the specified path.
+    Specify the target_path as a relative path within the repository or the working copy.
     By specifying start_line and end_line, you can retrieve a specific line range.
     A negative value specifies the number of lines from the end. If end_line is 0, the content up to the end of the file is retrieved.
     """
@@ -476,6 +483,7 @@ def cat_svn_file(target_path: str, revision: str = "HEAD", start_line: int = 1, 
 def export_svn_file(target_path: str, revision: str = "HEAD", output_path: str = "_tmp_export") -> str:
     """
     Exports the specified path to the given output_path.
+    Specify the target_path as a relative path within the repository or the working copy.
     """
     if not is_safe_path(output_path):
         return f"安全でないパスが指定されました: {output_path}"
@@ -493,9 +501,11 @@ def export_svn_file(target_path: str, revision: str = "HEAD", output_path: str =
     return result
 
 @mcp.tool()
-def get_svn_diff_by_revision(target_path: str, revision1: str, revision2: str) -> str:
+def get_svn_diff_by_revision(target_path: str, revision1: str, revision2: str = "") -> str:
     """
     Retrieves the difference between two revisions of a specified path.
+    Specify the target_path as a relative path within the repository or the working copy.
+    if revision2 is not specified, the difference between revision1 and revision1-1 is retrieved.
     """
     path = convert_target_path(target_path)
     print_log(f"Getting SVN diff for: {target_path} between revisions: {revision1} and {revision2}", file=sys.stderr)
@@ -505,6 +515,7 @@ def get_svn_diff_by_revision(target_path: str, revision1: str, revision2: str) -
 def get_svn_diff_by_url(target_path1: str, target_path2: str, revision1="HEAD", revision2="HEAD") -> str:
     """
     Retrieves the difference between two specified paths.
+    Specify the target_path as a relative path within the repository or the working copy.
     """
     path1 = convert_target_path(target_path1)
     path2 = convert_target_path(target_path2)
@@ -523,6 +534,7 @@ def get_svn_diff(target_path: str) -> str:
 def get_svn_commit_history(target_path: str) -> str:
     """
     Retrieves the SVN commit history (Revisions only) for the specified path in the repository.
+    Specify the target_path as a relative path within the repository or the working copy.
     """
     result = []
     print_log(f"Getting SVN commit history for: {target_path}", file=sys.stderr)
@@ -551,6 +563,7 @@ def get_svn_commit_log(revision: str) -> str:
 def get_svn_logs(target_path: str, limit: int = 10, revision1: str = "HEAD", revision2: str = "1") -> str:
     """
     Retrieves the SVN logs for the specified path. 
+    Specify the target_path as a relative path within the repository or the working copy.
     You can set a limit for the maximum number of logs to retrieve. 
     The revision range can be specified with revision1 and revision2. By default, revision1 is HEAD and revision2 is 1.
     """
@@ -620,6 +633,7 @@ def is_ancestor(path_A, path_B):
 def get_svn_branch_base(target_path: str) -> str:
     """
     Retrieves the SVN branch base for the specified path.
+    Specify the target_path as a relative path within the repository or the working copy.
     """
     path = convert_target_path(target_path)
     if path == None:
@@ -660,6 +674,7 @@ def get_svn_branch_base(target_path: str) -> str:
 def get_create_branch_logs(target_path: str) -> str:
     """
     Extracts only branch creation (folder copy) information from the SVN logs.
+    Specify the target_path as a relative path within the repository or the working copy.
     Output format:
     commit date and time | copy_to_path@revision | copy_from_path@base_revision
     """
@@ -681,6 +696,7 @@ def get_create_branch_logs(target_path: str) -> str:
 def search_svn_logs(target_path: str, keyword: str, regex: bool = False, limit: int = 10, revision1: str = "HEAD", revision2: str = "1") -> str:
     """
     Searches SVN logs for a specified path and returns matching logs.
+    Specify the target_path as a relative path within the repository or the working copy.
     You can set a limit for the maximum number of logs to retrieve. Default is 10.
     The revision range can be specified with revision1 and revision2. By default, revision1 is HEAD and revision2 is 1.
     If regex is True, keyword is treated as a regular expression. Default is False.
@@ -739,6 +755,7 @@ def get_svn_info() -> str:
 def get_svn_list(target_path: str, revision: str = "HEAD") -> str:
     """
     Retrieves a detailed list of SVN nodes.
+    Specify the target_path as a relative path within the repository or the working copy.
     The target_path can be specified as a relative path from the repository or a relative path from the working copy.
     """
 
