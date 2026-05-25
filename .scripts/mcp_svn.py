@@ -5,6 +5,8 @@ import argparse
 import datetime
 import subprocess
 import dataclasses
+import json
+from urllib.parse import urlparse, unquote
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
@@ -362,7 +364,7 @@ def pick_up_dir_copy_logs(log_text: str) -> list:
 def search_svn_nodes(target_path: str, revision: str = "HEAD", file_name: str = "*", depth: int = -1) -> str:
     """
     Searches for SVN nodes at the specified path.
-    target_path must be absolute path or full URL.
+    target_path can be specified as a relative path from the repository or the working copy.
     """
     print_log(f"Searching SVN nodes for: {target_path} at revision: {revision}, file_name: {file_name}, depth: {depth}", file=sys.stderr)
     target_path = target_path.removesuffix('/')
@@ -382,7 +384,6 @@ def search_svn_nodes(target_path: str, revision: str = "HEAD", file_name: str = 
 def get_svn_tree(target_path: str, revision: str = "HEAD", include_files: bool = False, depth: int = -1) -> str:
     """
     Retrieves the SVN tree structure for the specified path.
-    target_path must be absolute path or full URL.
     """
     print_log(f"Getting SVN tree for: {target_path} at revision: {revision}, include_files: {include_files}, depth: {depth}", file=sys.stderr)
     target_path = target_path.removesuffix('/')
@@ -399,7 +400,6 @@ def get_svn_tree(target_path: str, revision: str = "HEAD", include_files: bool =
 def get_svn_node_size(target_path: str, revision: str = "HEAD") -> str:
     """
     Retrieves the size of an SVN node at the specified path.
-    target_path must be absolute path or full URL.
     """
     path = convert_target_path(target_path)
     print_log(f"Getting SVN node size for: {target_path}", file=sys.stderr)
@@ -420,7 +420,6 @@ def get_svn_node_size(target_path: str, revision: str = "HEAD") -> str:
 def get_svn_node_kind(target_path: str, revision: str = "HEAD") -> str:
     """
     Retrieves the kind of a node at the specified path, or None if it doesn't exist.
-    target_path must be absolute path or full URL.
     """
     path = convert_target_path(target_path)
 #   print_log(f"Getting SVN node kind for: {target_path}", file=sys.stderr)
@@ -434,7 +433,6 @@ def get_svn_node_kind(target_path: str, revision: str = "HEAD") -> str:
 def blame_svn_file(target_path: str, revision: str = "HEAD", start_line: int = 1, end_line: int = 0) -> str:
     """
     Retrieves the blame information for an SVN file at the specified path.
-    target_path must be absolute path or full URL.
     The blame information includes the last change revision and author for each line.
     By specifying start_line and end_line, you can retrieve a specific line range.
     A negative value specifies the number of lines from the end. If end_line is 0, the content up to the end of the file is retrieved.
@@ -457,7 +455,6 @@ def blame_svn_file(target_path: str, revision: str = "HEAD", start_line: int = 1
 def cat_svn_file(target_path: str, revision: str = "HEAD", start_line: int = 1, end_line: int = 0) -> str:
     """
     Retrieves the content of an SVN file at the specified path.
-    target_path must be absolute path or full URL.
     By specifying start_line and end_line, you can retrieve a specific line range.
     A negative value specifies the number of lines from the end. If end_line is 0, the content up to the end of the file is retrieved.
     """
@@ -479,7 +476,6 @@ def cat_svn_file(target_path: str, revision: str = "HEAD", start_line: int = 1, 
 def export_svn_file(target_path: str, revision: str = "HEAD", output_path: str = "_tmp_export") -> str:
     """
     Exports the specified path to the given output_path.
-    target_path must be absolute path or full URL.
     """
     if not is_safe_path(output_path):
         return f"安全でないパスが指定されました: {output_path}"
@@ -500,7 +496,6 @@ def export_svn_file(target_path: str, revision: str = "HEAD", output_path: str =
 def get_svn_diff_by_revision(target_path: str, revision1: str, revision2: str) -> str:
     """
     Retrieves the difference between two revisions of a specified path.
-    target_path must be absolute path or full URL.
     """
     path = convert_target_path(target_path)
     print_log(f"Getting SVN diff for: {target_path} between revisions: {revision1} and {revision2}", file=sys.stderr)
@@ -510,7 +505,6 @@ def get_svn_diff_by_revision(target_path: str, revision1: str, revision2: str) -
 def get_svn_diff_by_url(target_path1: str, target_path2: str, revision1="HEAD", revision2="HEAD") -> str:
     """
     Retrieves the difference between two specified paths.
-    target_paths must be absolute path or full URL.
     """
     path1 = convert_target_path(target_path1)
     path2 = convert_target_path(target_path2)
@@ -521,7 +515,6 @@ def get_svn_diff_by_url(target_path1: str, target_path2: str, revision1="HEAD", 
 def get_svn_diff(target_path: str) -> str:
     """
     Retrieves the difference between the work and base versions of a specified local path.
-    target_path must be absolute path or full URL.
     """
     print_log(f"Getting SVN diff for: {target_path}", file=sys.stderr)
     return run_command(f'svn diff --internal-diff -x "-p -U 0" {target_path}')
@@ -530,7 +523,6 @@ def get_svn_diff(target_path: str) -> str:
 def get_svn_commit_history(target_path: str) -> str:
     """
     Retrieves the SVN commit history (Revisions only) for the specified path in the repository.
-    target_path must be absolute path or full URL.
     """
     result = []
     print_log(f"Getting SVN commit history for: {target_path}", file=sys.stderr)
@@ -548,10 +540,9 @@ def get_svn_commit_history(target_path: str) -> str:
     return f"Found revisions: {', '.join(result)}"
 
 @mcp.tool()
-def get_svn_commit_log(target_url: str, revision: str) -> str:
+def get_svn_commit_log(revision: str) -> str:
     """
     Retrieves the full SVN commit log (detailed) for a specified revision.
-    target_url must be full URL.
     """
     print_log(f"Getting SVN log for revision: {revision}", file=sys.stderr)
     return get_svn_log_internal(f"{g_repo_url}", f"-v -r {revision}")
@@ -560,7 +551,6 @@ def get_svn_commit_log(target_url: str, revision: str) -> str:
 def get_svn_logs(target_path: str, limit: int = 10, revision1: str = "HEAD", revision2: str = "1") -> str:
     """
     Retrieves the SVN logs for the specified path. 
-    target_path must be absolute path or full URL.
     You can set a limit for the maximum number of logs to retrieve. 
     The revision range can be specified with revision1 and revision2. By default, revision1 is HEAD and revision2 is 1.
     """
@@ -607,7 +597,6 @@ def get_svn_logs_continue() -> str:
 def get_svn_status() -> str:
     """
     Retrieves and returns the status of the SVN working copy.
-    target_path must be absolute path or full URL.
     """
     print_log(f"Getting SVN status for: {g_working_root}", file=sys.stderr)
     return run_command(f"svn status {g_working_root}")
@@ -631,7 +620,6 @@ def is_ancestor(path_A, path_B):
 def get_svn_branch_base(target_path: str) -> str:
     """
     Retrieves the SVN branch base for the specified path.
-    target_path must be absolute path or full URL.
     """
     path = convert_target_path(target_path)
     if path == None:
@@ -672,7 +660,6 @@ def get_svn_branch_base(target_path: str) -> str:
 def get_create_branch_logs(target_path: str) -> str:
     """
     Extracts only branch creation (folder copy) information from the SVN logs.
-    target_path must be absolute path or full URL.
     Output format:
     commit date and time | copy_to_path@revision | copy_from_path@base_revision
     """
@@ -694,7 +681,6 @@ def get_create_branch_logs(target_path: str) -> str:
 def search_svn_logs(target_path: str, keyword: str, regex: bool = False, limit: int = 10, revision1: str = "HEAD", revision2: str = "1") -> str:
     """
     Searches SVN logs for a specified path and returns matching logs.
-    target_path must be absolute path or full URL.
     You can set a limit for the maximum number of logs to retrieve. Default is 10.
     The revision range can be specified with revision1 and revision2. By default, revision1 is HEAD and revision2 is 1.
     If regex is True, keyword is treated as a regular expression. Default is False.
@@ -746,7 +732,6 @@ def search_svn_logs_continue() -> str:
 def get_svn_info() -> str:
     """
     Retrieves SVN information.
-    target_path must be absolute path or full URL.
     """
     return run_command("svn info")
 
@@ -754,7 +739,6 @@ def get_svn_info() -> str:
 def get_svn_list(target_path: str, revision: str = "HEAD") -> str:
     """
     Retrieves a detailed list of SVN nodes.
-    target_path must be absolute path or full URL.
     The target_path can be specified as a relative path from the repository or a relative path from the working copy.
     """
 
@@ -880,14 +864,21 @@ def create_log_file():
 
 
 def get_code_work_space():
-    import psutil
-
-    for proc in psutil.process_iter(['name', 'cmdline']):
-        try:
-            if "Code.exe" in proc.info['name']:
-                print_log(proc.info['cmdline'])
-        except:
-            pass
+    cwd = os.getcwd()
+    if cwd.endswith("Microsoft VS Code"):
+        print_log(f"Current working directory is not workspace : {cwd}", file=sys.stderr)
+        path = Path.home() / "AppData/Roaming/Code/User/globalStorage/storage.json"
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if "windowsState" in data and "lastActiveWindow" in data["windowsState"] and "folder" in data["windowsState"]["lastActiveWindow"]:
+                    folder = data["windowsState"]["lastActiveWindow"]["folder"]
+                    folder_path = Path(unquote(urlparse(folder).path.lstrip('/')))
+                    print_log(f"Found folder: {folder_path}", file=sys.stderr)
+                    os.chdir(folder_path)
+                else:
+                    print_log("No windowsState or lastActiveWindow found in VS Code storage.json", file=sys.stderr)
+        pass
 
 def main():
     parser = argparse.ArgumentParser(description="")
@@ -899,7 +890,6 @@ def main():
         create_log_file()
 
     get_code_work_space()
-    print_log(f"Current working directory: {os.getcwd()}")
     read_credentials()
     get_repo_url_internal()
 #   test_calls()
