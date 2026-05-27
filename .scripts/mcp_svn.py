@@ -6,6 +6,7 @@ import datetime
 import subprocess
 import dataclasses
 import json
+import shlex
 from urllib.parse import urlparse, unquote
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
@@ -23,23 +24,32 @@ class SVNNode:
     revision: str = ""  # 最終リビジョン
     children: list = dataclasses.field(default_factory=list)  # 子ノードのリスト（ディレクトリの場合）
 
+@dataclasses.dataclass
 class LogStats:
     target_path: str = None
-    limit: int
-    revision1: str
-    revision2: str
-    last_revision: int
+    limit: int = 0
+    revision1: str = ""
+    revision2: str = ""
+    last_revision: int = 0
     keyword: str = ""
     regex: bool = False
 
+@dataclasses.dataclass
+class SvnExternal:
+    owner_path: str          # propget -R の左側
+    local_dir: str
+    url: str
+    revision: Optional[str] = None   #
 
-RE_REVISION = re.compile(r"^r(\d+)")
-RE_LOG_SEPARATOR = re.compile(r"^-{72}\s*$")
-RE_LOG_HEADER    = re.compile(r"^r(\d+)\s+\|\s+(\S+)\s+\|\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
-RE_LOG_COPY      = re.compile(r"^\s*A\s*(\S+)\s*\(from\s+([^:]+):(\d+)\)")
-RE_LOG_NOT_ADD   = re.compile(r"^\s*[MDR]\s*(\S+)\s*")
+
+RE_REVISION       = re.compile(r"^r(\d+)")
+RE_LOG_SEPARATOR  = re.compile(r"^-{72}\s*$")
+RE_LOG_HEADER     = re.compile(r"^r(\d+)\s+\|\s+(\S+)\s+\|\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+RE_LOG_COPY       = re.compile(r"^\s*A\s*(\S+)\s*\(from\s+([^:]+):(\d+)\)")
+RE_LOG_NOT_ADD    = re.compile(r"^\s*[MDR]\s*(\S+)\s*")
 RE_LIST_LINE_DIR  = re.compile(r"^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\/\s*$")
 RE_LIST_LINE_FILE = re.compile(r"^\s*(\d+)\s+(\S+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$")
+RE_PROPGET_LINE   = re.compile(r"^(.*?) - (.*)$")
 
 g_repo_url = ""
 g_working_url = ""
@@ -360,6 +370,152 @@ def pick_up_dir_copy_logs(log_text: str) -> list:
             pass
     return logs
 
+def is_ancestor(path_A, path_B):
+    """
+    path_A が path_B の祖先ディレクトリなら True
+    同一パスも True とする
+    """
+    path_A = Path(path_A).resolve()
+    path_B = Path(path_B).resolve()
+
+    try:
+        path_B.relative_to(path_A)
+        return True
+    except ValueError:
+        return False
+
+def parse_external_line(line: str) -> Optional[SvnExternal]:
+    """
+    svn propget -R svn:externals の1行をParseする
+    """
+
+    line = line.strip()
+
+    if not line:
+        return None
+
+    #
+    # まず:
+    # sample\folder - extlib http://repo
+    #
+    # の左側を分離
+    #
+    m = RE_PROPGET_LINE.match(line)
+    if not m:
+        raise ValueError(f"Invalid propget line: {line}")
+
+    owner_path = m.group(1).strip()
+    value = m.group(2).strip()
+
+    #
+    # shell風tokenize
+    #
+    # "folder D short cut"
+    # を1tokenとして扱う
+    #
+    tokens = shlex.split(value)
+
+    if not tokens:
+        raise ValueError(f"Empty externals definition: {line}")
+
+    operative_revision = None
+
+    #
+    # -r123
+    # -r 123
+    # 両対応
+    #
+    cleaned = []
+
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+
+        if t.startswith("-r"):
+            if t == "-r":
+                if i + 1 >= len(tokens):
+                    raise ValueError(f"Missing revision after -r: {line}")
+
+                operative_revision = tokens[i + 1]
+                i += 2
+                continue
+            else:
+                operative_revision = t[2:]
+                i += 1
+                continue
+
+        cleaned.append(t)
+        i += 1
+
+    tokens = cleaned
+
+    #
+    # URL tokenを探す
+    #
+    url_index = None
+
+    for i, t in enumerate(tokens):
+        if (
+            "://" in t
+            or t.startswith("^/")
+            or t.startswith("/")
+        ):
+            url_index = i
+            break
+
+    if url_index is None:
+        raise ValueError(f"URL not found: {line}")
+
+    url = tokens[url_index]
+
+    #
+    # peg revision
+    #
+    peg_revision = None
+
+    m = re.match(r"^(.*)@(\d+)$", url)
+    if m:
+        url = m.group(1)
+        peg_revision = m.group(2)
+
+    #
+    # local_dir判定
+    #
+    # old format:
+    #   URL local_dir
+    #
+    # new format:
+    #   local_dir URL
+    #
+    if url_index == 0:
+        #
+        # old style
+        #
+        if len(tokens) < 2:
+            raise ValueError(f"Missing local dir: {line}")
+
+        local_dir = " ".join(tokens[1:])
+
+    else:
+        #
+        # new style
+        #
+        local_dir = " ".join(tokens[:url_index])
+
+    if operative_revision:
+        revision = operative_revision
+    elif peg_revision:
+        revision = peg_revision
+    else:
+        revision = "HEAD"
+
+    return SvnExternal(
+        owner_path=owner_path,
+        local_dir=local_dir,
+        url=url,
+        revision=revision
+    )
+
 @mcp.tool()
 def search_svn_nodes(target_path: str, revision: str = "HEAD", file_name: str = "*", depth: int = -1) -> str:
     """
@@ -614,21 +770,6 @@ def get_svn_status() -> str:
     print_log(f"Getting SVN status for: {g_working_root}", file=sys.stderr)
     return run_command(f"svn status {g_working_root}")
 
-
-def is_ancestor(path_A, path_B):
-    """
-    path_A が path_B の祖先ディレクトリなら True
-    同一パスも True とする
-    """
-    path_A = Path(path_A).resolve()
-    path_B = Path(path_B).resolve()
-
-    try:
-        path_B.relative_to(path_A)
-        return True
-    except ValueError:
-        return False
-
 @mcp.tool()
 def get_svn_branch_base(target_path: str) -> str:
     """
@@ -763,6 +904,49 @@ def get_svn_list(target_path: str, revision: str = "HEAD") -> str:
     path = convert_target_path(target_path)
     return get_svn_list_internal(path, revision)
 
+@mcp.tool()
+def get_svn_property(target_path: str, property_name: str, revision: str = "HEAD") -> str:
+    """
+    Retrieves the value of an SVN property for a specified path recursively.
+    Specify the target_path as a relative path within the repository or the working copy.
+    The target_path can be specified as a relative path from the repository or a relative path from the working copy.
+    """
+    print_log(f"Getting SVN property: {property_name} for: {target_path} at revision: {revision}", file=sys.stderr)
+    path = convert_target_path(target_path)
+    return run_command(f"svn propget -R {property_name} {path}@{revision}")
+
+@mcp.tool()
+def get_svn_externals(target_path: str, revision: str = "HEAD") -> str:
+    """
+    Retrieves SVN external definitions for the specified path.
+    Uses svn propget -R svn:externals to find all external links.
+    Specify the target_path as a relative path within the repository or the working copy.
+    Output format:
+    property owner : external_url@revision -> local directory
+    """
+    print_log(f"Getting SVN externals for: {target_path} at revision: {revision}", file=sys.stderr)
+    
+    # Get svn:externals property
+    external_defs = get_svn_property(target_path, "svn:externals", revision)
+    
+    if not external_defs or "property" in external_defs.lower():
+        return "No external definitions found"
+    
+    # Parse and format external definitions
+    result_lines = []
+    for line in external_defs.split('\n'):
+        result = parse_external_line(line)
+        if result:
+            text = f'externals prop for {result.owner_path} : {result.url}@{result.revision} -> {result.local_dir}'
+#           print_log(text)
+            result_lines.append(text)
+        
+    if not result_lines:
+        return "No external definitions found"
+    
+    return "\n".join(result_lines)
+
+
 def test_calls():
 #   result = get_svn_commit_history(".scripts/mcp_svn.py")
 #   print_log(f"SVN commit history:\n{result}", file=sys.stderr)
@@ -832,6 +1016,11 @@ def test_calls():
     result = get_create_branch_logs("branches")
     print_log(f"get_create_branch_logs():\n{result}", file=sys.stderr)
 
+    external_defs = get_svn_property(".", "svn:externals", "HEAD")
+    print_log(f"get_svn_property():\n{external_defs}", file=sys.stderr)
+ 
+    result = get_svn_externals(".")
+    print_log(f"get_svn_externals():\n{result}", file=sys.stderr)
     return
 
 def get_app_path():
