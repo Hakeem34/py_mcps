@@ -19,7 +19,7 @@
 			"type": "stdio",
 			"command": "python",
 			"args": [
-				"${workspaceFolder}/.scripts/mcp_svn.py"
+				"${workspaceFolder}/.scripts/mcp_svn.py", "--verbose"
 			]
 		},
 		"mcp-confluence": {

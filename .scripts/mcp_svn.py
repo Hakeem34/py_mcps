@@ -946,6 +946,59 @@ def get_svn_externals(target_path: str, revision: str = "HEAD") -> str:
     
     return "\n".join(result_lines)
 
+@mcp.tool()
+def get_svn_binary_files(target_path: str, revision: str = "HEAD") -> str:
+    """
+    Retrieves binary files under the specified SVN path.
+
+    This function recursively scans svn:mime-type properties and returns
+    paths whose mime-type is considered binary
+    (typically application/octet-stream).
+
+    Returns:
+        A newline-separated list of binary file paths.
+        Returns an empty string if no binary files are found.
+    """
+    print_log(f"Getting SVN binary files for: {target_path} at revision: {revision}", file=sys.stderr)    
+
+    # Get svn:mime-type property
+    mime_types = get_svn_property(target_path, "svn:mime-type", revision)
+    if not mime_types:
+        return ""
+
+    binary_files = []
+    for line in mime_types.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if " - " not in line:
+            continue
+
+        try:
+            path, mime_type = line.split(" - ", 1)
+            path = path.strip()
+            mime_type = mime_type.strip().lower()
+
+            #
+            # Treat non-text types as binary
+            #
+            # Typical binary mime types:
+            #   application/octet-stream
+            #   image/png
+            #   application/pdf
+            #
+            is_binary = not mime_type.startswith("text/")
+
+            if is_binary:
+                binary_files.append(path)
+
+        except Exception as e:
+            print_log(
+                f"Failed to parse svn:mime-type line: {line} ({e})",
+                file=sys.stderr
+            )
+
+    return "\n".join(binary_files)
 
 def test_calls():
 #   result = get_svn_commit_history(".scripts/mcp_svn.py")
@@ -1021,6 +1074,12 @@ def test_calls():
  
     result = get_svn_externals(".")
     print_log(f"get_svn_externals():\n{result}", file=sys.stderr)
+
+    result = get_svn_binary_files(".")
+    print_log(f"get_svn_binary_files():\n{result}", file=sys.stderr)
+
+    result = get_svn_binary_files(".\scripts")
+    print_log(f"get_svn_binary_files():\n{result}", file=sys.stderr)
     return
 
 def get_app_path():
