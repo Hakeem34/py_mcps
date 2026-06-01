@@ -35,17 +35,19 @@ NS_CHART  = {
 NS_TC     = {'tc': 'http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments'}
 NS_PERSON = {'p': 'http://schemas.microsoft.com/office/spreadsheetml/2018/person'}
 
+
 @dataclasses.dataclass
 class CellInfo:
     text     : str = ""
-
-
+    formula  : str = ""
+    type     : str = ""
 
 @dataclasses.dataclass
 class WorkSheetXML:
     rid      : str = ""
     name     : str = ""
     xml_path : str = ""
+    cells    : dict = dataclasses.field(default_factory=dict)
     comments : list = dataclasses.field(default_factory=list)
     images   : list = dataclasses.field(default_factory=list)
     charts   : list = dataclasses.field(default_factory=list)
@@ -79,6 +81,7 @@ class CommentXML:
 @dataclasses.dataclass
 class ShapeInfo:
     id       : int = 0
+    type     : str = "sp"
     name     : str = ""
     text     : str = ""
     col      : int = 0
@@ -114,6 +117,12 @@ def print_log(text, file=sys.stderr):
     if g_log_file:
         print(text, file=g_log_file)
         g_log_file.flush()
+
+def print_shape_info(shape, indent):
+#   print_log(f'{' '*indent*2}[{shape.id}][{shape.name}][{shape.type}] Addr:({shape.col}, {shape.row}) offset:({shape.off_x}, {shape.off_y}) size:({shape.width}, {shape.height})')
+#   for child in shape.children:
+#       print_shape_info(child, indent + 1)
+    return
 
 def get_app_path():
     if getattr(sys, 'frozen', False):
@@ -195,11 +204,16 @@ def load_persons(z : zipfile.ZipFile):
 
 
 def get_rels_path(parts_path: str):
+    """
+    .xmlファイルに対する.relsファイルのパス生成
+    """
     p = PurePosixPath(parts_path)
     return str(p.parent / '_rels' / f'{p.name}.rels')
 
-
 def parse_shape(sp):
+    """
+    図形、コネクタの解析
+    """
     shape = ShapeInfo()
 
     cNvPr = sp.find('./xdr:nvSpPr/xdr:cNvPr', namespaces=NS)
@@ -222,30 +236,44 @@ def parse_shape(sp):
             cy = int(size[0].attrib["cy"])
             shape.width  = int(cx / EMU_PER_MM)
             shape.height = int(cy / EMU_PER_MM)
+    else:
+        cNvPr = sp.find('./xdr:nvCxnSpPr/xdr:cNvPr', namespaces=NS)
+        if cNvPr is not None:
+            shape.id = cNvPr.get('id')
+            shape.name = cNvPr.get('name') or ''
+            shape.type = "cxnsp"
+#           print_log(f'[{shape.id}][{shape.name}]:コネクタ')
 
 #   shape.text = '\n'.join(sp.xpath('.//a:t/text()', namespaces=NS))
     shape.text = get_shape_text(sp, NS)
-    print_log(f'[{shape.id}][{shape.name}]:{shape.text}')
-    print_log(f'  geometry : {shape.geometry}')
-    print_log(f'  offset   : ({shape.off_x}, {shape.off_y})')
-    print_log(f'  size     : {shape.width} x {shape.height}')
+#   print_log(f'  [{shape.id}][{shape.name}]:{shape.text}')
+#   print_log(f'  geometry : {shape.geometry}')
+#   print_log(f'  offset   : ({shape.off_x}, {shape.off_y})')
+#   print_log(f'  size     : {shape.width} x {shape.height}')
     return shape
 
 def parse_group_shape(grp):
+    """
+    グループ化した図形の解析
+    """
     shape = ShapeInfo()
     cNvPr = grp.find('./xdr:nvGrpSpPr/xdr:cNvPr', namespaces=NS)
     if cNvPr is not None:
         shape.id = cNvPr.get('id')
         shape.name = cNvPr.get('name') or ''
+        shape.type = "grpsp"
 
-    print_log(f'[{shape.id}][{shape.name}]')
+#   print_log(f'[{shape.id}][{shape.name}]')
     # group内shape: descendant shapes in a group
     for sp in grp.xpath('./xdr:sp', namespaces=NS):
-        print_log(f"xdr:sp")
+#       print_log(f"xdr:sp")
         shape.children.append(parse_shape(sp))
 
+    for cnxsp in grp.xpath('./xdr:cxnSp', namespaces=NS):
+        shape.children.append(parse_shape(cnxsp))
+
     for subgrp in grp.xpath('./xdr:grpSp', namespaces=NS):
-        print_log(f"xdr:grpSp2")
+#       print_log(f"xdr:grpSp2")
         shape.children.append(parse_group_shape(subgrp))
 
     return shape
@@ -260,20 +288,35 @@ def parse_drawing_xml(z : zipfile.ZipFile, draw_xml_path : str, ws_obj : WorkShe
 
         # normal shape
         for sp in anchor.xpath('./xdr:sp', namespaces=NS):
-            print_log(f"xdr:sp1")
+#           print_log(f"xdr:sp1")
             shape = parse_shape(sp)
 
             # セル座標
             shape.col  = int(anchor.xpath(".//xdr:from/xdr:col/text()", namespaces=NS)[0]) + 1
             shape.row  = int(anchor.xpath(".//xdr:from/xdr:row/text()", namespaces=NS)[0]) + 1
+#           print_log(f'[{shape.id}][{shape.name}] Addr:({shape.col}, {shape.row})')
+            print_shape_info(shape, 0)
             ws_obj.shapes.append(shape)
 
+        for cnxsp in anchor.xpath('./xdr:cxnSp', namespaces=NS):
+            shape = parse_shape(cnxsp)
+
+            # セル座標
+            shape.col  = int(anchor.xpath(".//xdr:from/xdr:col/text()", namespaces=NS)[0]) + 1
+            shape.row  = int(anchor.xpath(".//xdr:from/xdr:row/text()", namespaces=NS)[0]) + 1
+#           print_log(f'[{shape.id}][{shape.name}] Addr:({shape.col}, {shape.row})')
+            print_shape_info(shape, 0)
+            ws_obj.shapes.append(shape)
+
+
         for grp in anchor.xpath('./xdr:grpSp', namespaces=NS):
-            print_log(f"xdr:grpSp1")
+#           print_log(f"xdr:grpSp1")
             shape = parse_group_shape(grp)
             # セル座標
             shape.col  = int(anchor.xpath(".//xdr:from/xdr:col/text()", namespaces=NS)[0]) + 1
             shape.row  = int(anchor.xpath(".//xdr:from/xdr:row/text()", namespaces=NS)[0]) + 1
+#           print_log(f'[{shape.id}][{shape.name}] Addr:({shape.col}, {shape.row})')
+            print_shape_info(shape, 0)
             ws_obj.shapes.append(shape)
  
     rel_path = get_rels_path(draw_xml_path)
@@ -288,9 +331,7 @@ def parse_drawing_xml(z : zipfile.ZipFile, draw_xml_path : str, ws_obj : WorkShe
             elif 'image' in rel.attrib["Type"]:
 #               print_log(f'image : {rel.attrib["Target"]}')
                 ws_obj.images.append(rel.attrib["Target"])
-                
         
-
     return 
 
 
@@ -321,18 +362,31 @@ def parse_work_sheet(z : zipfile.ZipFile, wb_obj : WorkBookXML):
     ワークシートのXML解析
     """
     for ws_name, ws_obj in wb_obj.work_sheets.items():
-        print_log(f'------------------------------------------- parse_work_sheet : {ws_name} -------------------------------------------')
+        print_log(f'------------------------------------------- parse_work_sheet : {ws_name} ({ws_obj.xml_path})-------------------------------------------')
         #シートのxmlを確認する
         ws_xml = ET.fromstring(z.read(ws_obj.xml_path))
         for c in ws_xml.xpath('//main:c', namespaces=NS):
+            cell = CellInfo()
             cell_addr = c.get('r')      # A1 とか
             cell_type = c.get('t')      # s, inlineStr, b など
-            v = c.find('{*}v')
-            if (v != None):
-#               print(dir(v))
-#               print_log(f'  cell={cell_addr} type={cell_type} value={v.text}')
-                pass
+            cell_style = c.get('s')
+            val = c.find('{*}v')
+            cell.type = cell_type
+            if val is not None:
+#               print_log(f'  cell1={cell_addr} type={cell_type} value={val.text}')
+                cell.text = val.text
+            else:
+#               print_log(f'  cell2={cell_addr} type={cell_type}')
+                cell.text = None
 
+            formula = c.find('{*}f')
+            if formula is not None:
+                cell.formula = formula.text
+#               print_log(f'  cell1={cell_addr} type={cell_type} value={val.text} by formula={cell.formula}')
+            else:
+                cell.formula = None
+
+            ws_obj.cells[cell_addr] = cell
        
         #シートに紐づくdrawings / commentsをチェックする
         rel_path = get_rels_path(ws_obj.xml_path)
@@ -343,7 +397,7 @@ def parse_work_sheet(z : zipfile.ZipFile, wb_obj : WorkBookXML):
                 if "drawing" in rel.attrib["Type"]:
                     draw_xml_path = "xl/drawings/" + rel.attrib["Target"].split("/")[-1]
 #                   print_log(rel.attrib["Target"])
-                    print_log(f'[rels] {ws_name} -> {draw_xml_path}', file=sys.stderr)
+#                   print_log(f'[rels] {ws_name} -> {draw_xml_path}', file=sys.stderr)
                     parse_drawing_xml(z, draw_xml_path, ws_obj)
                 elif "threadedComment" in rel.attrib["Type"]:
 #                   print_log(rel.attrib["Target"])
@@ -364,6 +418,9 @@ def parse_work_sheet(z : zipfile.ZipFile, wb_obj : WorkBookXML):
 
 
 def parse_chart(z : zipfile.ZipFile, chart_path : str, ws_obj : WorkSheetXML):
+    """
+    チャート(グラフ)のxml解析
+    """
     chart_xml = ET.fromstring(z.read(chart_path))
 
     chart_info = ChartInfo(xml_path = chart_path)
