@@ -25,6 +25,7 @@ NS = {
     "r"   : "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
     "xdr" : "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing",
     "a"   : "http://schemas.openxmlformats.org/drawingml/2006/main",
+    'x14':  'http://schemas.microsoft.com/office/spreadsheetml/2009/9/main',
 }
 
 NS_CHART  = {
@@ -115,6 +116,7 @@ class ShapeInfo:
     id       : int = 0
     type     : str = "sp"
     name     : str = ""
+    descr    : str = ""
     text     : str = ""
     col      : int = 0
     row      : int = 0
@@ -259,6 +261,7 @@ def parse_shape(sp):
     if cNvPr is not None:
         shape.id = cNvPr.get('id')
         shape.name = cNvPr.get('name') or ''
+        shape.descr = cNvPr.get('descr') or ''
 
         # 幾何学情報、サイズ
         shape.geometry = sp.xpath(".//a:prstGeom/@prst", namespaces=NS)
@@ -283,12 +286,7 @@ def parse_shape(sp):
             shape.type = "cxnsp"
 #           print_log(f'[{shape.id}][{shape.name}]:コネクタ')
 
-#   shape.text = '\n'.join(sp.xpath('.//a:t/text()', namespaces=NS))
     shape.text = get_shape_text(sp, NS)
-#   print_log(f'  [{shape.id}][{shape.name}]:{shape.text}')
-#   print_log(f'  geometry : {shape.geometry}')
-#   print_log(f'  offset   : ({shape.off_x}, {shape.off_y})')
-#   print_log(f'  size     : {shape.width} x {shape.height}')
     return shape
 
 def parse_group_shape(grp):
@@ -644,6 +642,9 @@ def parse_chart(z : zipfile.ZipFile, chart_path : str, ws_obj : WorkSheetXML):
         if title:
 #           print_log(f'val_axis_title = {title}')
             chart_info.axis['value'] = title
+
+    ws_obj.charts.append(chart_info)
+    return chart_info
  
 def parse_shared_string(z : zipfile.ZipFile, wb_obj : WorkBookXML):
     """
@@ -773,6 +774,32 @@ def parse_by_xml(wb_path):
 def convert_all_options():
     return "BNSVFDGCTMH"
 
+def _compile_search_pattern(key_word : str, regex : bool):
+    try:
+        if regex:
+            return re.compile(key_word, re.IGNORECASE)
+        return re.compile(re.escape(key_word), re.IGNORECASE)
+    except re.error:
+        return None
+
+def _cell_display_text(cell : CellInfo, wb_obj : WorkBookXML) -> str:
+    if cell is None:
+        return ""
+    value = cell.text or ""
+    if cell.type == 's' and value:
+        try:
+            idx = int(value)
+            if 0 <= idx < len(wb_obj.shared_strings):
+                return wb_obj.shared_strings[idx].text
+        except Exception:
+            pass
+    return value
+
+def _matches(pattern, text : str) -> bool:
+    if not text:
+        return False
+    return bool(pattern.search(text))
+
 @mcp.tool()
 def grep_work_book(target_path : str, key_word : str, regex : bool = False, option : str = "all") -> str:
     """
@@ -801,9 +828,110 @@ def grep_work_book(target_path : str, key_word : str, regex : bool = False, opti
     """
     if option == "all":
         option = convert_all_options()
-    
-    
-    return ""
+
+    option_set = set(option.upper())
+    matcher = _compile_search_pattern(key_word, regex)
+    if matcher is None:
+        return ""
+
+    results = []
+    try:
+        wb_obj = parse_by_xml(target_path)
+    except Exception as e:
+        print_log(f'grep_work_book parse error: {e}')
+        return ""
+
+    if 'B' in option_set:
+        file_name = os.path.basename(target_path)
+        if _matches(matcher, file_name) or _matches(matcher, target_path):
+            results.append(f"[B]{target_path}:{file_name}")
+
+    if 'N' in option_set:
+        for name_info in wb_obj.names.values():
+            if _matches(matcher, name_info.name):
+                results.append(f"[N]{target_path}:{name_info.name}:Name={name_info.name}")
+            if _matches(matcher, name_info.formula or ""):
+                results.append(f"[N]{target_path}:{name_info.name}:Formula={name_info.formula}")
+            if _matches(matcher, name_info.comment or ""):
+                results.append(f"[N]{target_path}:{name_info.name}:Comment={name_info.comment}")
+
+    for ws_name, ws_obj in wb_obj.work_sheets.items():
+        if 'S' in option_set and _matches(matcher, ws_name):
+            results.append(f"[S]{target_path}:{ws_name}:{ws_name}")
+
+        if 'V' in option_set or 'F' in option_set:
+            for cell_addr, cell in ws_obj.cells.items():
+                if 'V' in option_set:
+                    text = _cell_display_text(cell, wb_obj)
+                    if _matches(matcher, text):
+                        results.append(f"[V]{target_path}:{ws_name}!{cell_addr}:{text}")
+                if 'F' in option_set and cell.formula:
+                    if _matches(matcher, cell.formula):
+                        results.append(f"[F]{target_path}:{ws_name}!{cell_addr}:{cell.formula}")
+
+        if 'D' in option_set:
+            for shape in ws_obj.shapes:
+                if _matches(matcher, shape.name or "") or _matches(matcher, shape.text or "") or _matches(matcher, shape.type or "") or _matches(matcher, shape.descr or ""):
+                    ident = shape.name or str(shape.id)
+                    content = f"{shape.type}:{shape.text or ''}".strip()
+                    results.append(f"[D]{target_path}:{ws_name}!{ident}:{content}")
+
+        if 'G' in option_set:
+            for chart in ws_obj.charts:
+                matched = False
+                chart_texts = [chart.title] + chart.series + list(chart.axis.values())
+                for text in chart_texts:
+                    if _matches(matcher, text or ""):
+                        matched = True
+                        break
+                if matched:
+                    display = chart.title or chart.xml_path
+                    results.append(f"[G]{target_path}:{ws_name}!{display}:{chart.xml_path}")
+
+        if 'C' in option_set:
+            for comment_obj in ws_obj.comments:
+                for comment in comment_obj.comments:
+                    if _matches(matcher, comment.text or "") or _matches(matcher, comment.author or "") or _matches(matcher, comment.cell or ""):
+                        author_part = comment.author or ""
+                        results.append(f"[C]{target_path}:{ws_name}!{comment.cell}:{author_part}:{comment.text}")
+
+        if 'T' in option_set:
+            for table_info in ws_obj.tables:
+                found = False
+                fields = [table_info.name, table_info.disp_name, table_info.ref]
+                if table_info.style:
+                    fields.extend([str(table_info.style.get('name', '')), str(table_info.style.get('showFirstColumn', '')), str(table_info.style.get('showLastColumn', '')), str(table_info.style.get('showRowStripes', '')), str(table_info.style.get('showColumnStripes', ''))])
+                for col in table_info.columns:
+                    fields.append(col.get('name', ''))
+                    if col.get('calculatedColumnFormula'):
+                        fields.append(col.get('calculatedColumnFormula'))
+                for value in fields:
+                    if _matches(matcher, value or ""):
+                        found = True
+                        break
+                if found:
+                    name = table_info.name or table_info.disp_name or table_info.ref or "Table"
+                    results.append(f"[T]{target_path}:{ws_name}!{name}:{table_info.ref}")
+
+        if 'H' in option_set:
+            for hl in ws_obj.hyper_links:
+                if _matches(matcher, hl.ref or "") or _matches(matcher, hl.display or "") or _matches(matcher, hl.location or ""):
+                    ident = hl.ref or hl.location or hl.display or "HyperLink"
+                    display = hl.display or hl.location or ""
+                    results.append(f"[H]{target_path}:{ws_name}!{ident}:{display}")
+
+    if 'M' in option_set:
+        for macro in wb_obj.vba_macros:
+            if _matches(matcher, macro.module or ""):
+                results.append(f"[M]{target_path}:{macro.module}:module")
+            lines = macro.lines
+            if isinstance(lines, str):
+                lines = lines.splitlines()
+            for line in lines or []:
+                if _matches(matcher, line or ""):
+                    results.append(f"[M]{target_path}:{macro.module}:{line.strip()}")
+
+    return '\n'.join(results)
 
 
 @mcp.tool()
@@ -835,12 +963,23 @@ def grep_work_books(target_path : str, key_word : str, recursive : bool = True, 
      Note: The actual format of the return value can be designed as needed, but it should contain enough information to identify where the keyword was found.
     """
 
+    grep_results = []
     if os.path.isdir(target_path):
-        grep_work_book = ""
+        for root, dirs, files in os.walk(target_path):
+            if not recursive:
+                dirs.clear()
+            for file_name in files:
+                if file_name.lower().endswith(('.xlsx', '.xlsm', '.xltx', '.xltm', '.xlam')):
+                    file_path = os.path.join(root, file_name)
+                    result = grep_work_book(file_path, key_word, regex, option)
+                    if result:
+                        grep_results.append(result)
     else:
-        grep_result = grep_work_book(target_path, key_word, regex, option)
+        result = grep_work_book(target_path, key_word, regex, option)
+        if result:
+            grep_results.append(result)
 
-    return grep_result
+    return '\n'.join(grep_results)
 
 @mcp.tool()
 def get_work_sheet_summary(sheet_name : str, wb_path : str = "") -> str:
