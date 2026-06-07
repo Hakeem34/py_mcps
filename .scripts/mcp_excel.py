@@ -44,14 +44,20 @@ class CellInfo:
 
 @dataclasses.dataclass
 class WorkSheetXML:
-    rid      : str = ""
-    name     : str = ""
-    xml_path : str = ""
-    cells    : dict = dataclasses.field(default_factory=dict)
-    comments : list = dataclasses.field(default_factory=list)
-    images   : list = dataclasses.field(default_factory=list)
-    charts   : list = dataclasses.field(default_factory=list)
-    shapes   : list = dataclasses.field(default_factory=list)
+    rid             : str = ""
+    name            : str = ""
+    xml_path        : str = ""
+    hidden          : bool = False
+    cells           : dict = dataclasses.field(default_factory=dict)
+    comments        : list = dataclasses.field(default_factory=list)
+    images          : list = dataclasses.field(default_factory=list)
+    charts          : list = dataclasses.field(default_factory=list)
+    shapes          : list = dataclasses.field(default_factory=list)
+    shared_formulas : dict = dataclasses.field(default_factory=dict)
+    hyper_links     : list = dataclasses.field(default_factory=list)
+    tables          : list = dataclasses.field(default_factory=list)
+    rels            : dict = dataclasses.field(default_factory=dict)
+    filter          : FilterInfo = None
 
 @dataclasses.dataclass
 class WorkBookXML:
@@ -60,7 +66,33 @@ class WorkBookXML:
     vba_macros     : list = dataclasses.field(default_factory=list)
     shared_strings : list = dataclasses.field(default_factory=list)
     person_info    : dict = dataclasses.field(default_factory=dict)
+    names          : dict = dataclasses.field(default_factory=dict)
 
+@dataclasses.dataclass
+class FilterInfo:
+    ref            : str = ""
+    filters        : dict = dataclasses.field(default_factory=dict)
+
+@dataclasses.dataclass
+class TableInfo:
+    rid            : str = ""
+    id             : str = ""
+    name           : str = ""
+    disp_name      : str = ""
+    ref            : str = ""
+    style          : dict = dataclasses.field(default_factory=dict)
+    columns        : list = dataclasses.field(default_factory=list)
+    filter         : FilterInfo = None
+
+
+@dataclasses.dataclass
+class DefinedName:
+    name            : str = ""
+    formula         : str = ""
+    comment         : str = ""
+    local_sheet_id  : str = ""
+    hidden          : str = ""
+    
 @dataclasses.dataclass
 class SharedString:
     text           : str = ""
@@ -92,6 +124,13 @@ class ShapeInfo:
     width    : int = 0
     height   : int = 0
     children : list = dataclasses.field(default_factory=list)
+
+@dataclasses.dataclass
+class HyperLinkInfo:
+    ref      : str = ""
+    location : str = ""
+    display  : str = ""
+    rid      : str = ""
 
 @dataclasses.dataclass
 class ChartInfo:
@@ -278,6 +317,102 @@ def parse_group_shape(grp):
 
     return shape
 
+def parse_table_xml(z : zipfile.ZipFile, table_xml_path : str, ws_obj : WorkSheetXML):
+    """
+    テーブルの解析
+    """
+#   print_log(f'parse_table_xml : {table_xml_path}')
+    xml = ET.fromstring(z.read(table_xml_path))
+
+    table_info = TableInfo()
+
+    # table attribute
+    table_info.id = xml.get('id')
+    table_info.name = xml.get('name')
+    table_info.disp_name = xml.get('displayName')
+    table_info.ref = xml.get('ref')
+#   print_log(f'  TABLE: ' f'id={table_info.id} ' f'name={table_info.name} ' f'ref={table_info.ref}')
+
+    # table style
+    style = xml.find('./main:tableStyleInfo', namespaces=NS)
+    if style is not None:
+        table_info.style = {
+            'name': style.get('name'),
+            'showFirstColumn': style.get('showFirstColumn'),
+            'showLastColumn': style.get('showLastColumn'),
+            'showRowStripes': style.get('showRowStripes'),
+            'showColumnStripes': style.get('showColumnStripes'),
+        }
+
+#       print_log(f'    STYLE: ' f'{table_info.style["name"]}')
+
+    # columns
+    for col in xml.xpath('./main:tableColumns/main:tableColumn', namespaces=NS):
+        col_info = {
+            'id': col.get('id'),
+            'name': col.get('name'),
+            'totalsRowLabel': col.get('totalsRowLabel'),
+            'totalsRowFunction': col.get('totalsRowFunction'),
+            'calculatedColumnFormula': None,
+        }
+
+        # calculated column formula
+        calc_formula = col.find('./main:calculatedColumnFormula', namespaces=NS)
+        if calc_formula is not None:
+            col_info['calculatedColumnFormula'] = \
+                calc_formula.text
+
+        table_info.columns.append(col_info)
+
+#       print_log(f'    COLUMN: ' f'id={col_info["id"]} ' f'name={col_info["name"]}')
+        if col_info['calculatedColumnFormula']:
+            print_log(f'      FORMULA: ' f'{col_info["calculatedColumnFormula"]}')
+
+    # auto filter
+    af = xml.find('./main:autoFilter', namespaces=NS)
+    if af is not None:
+        af_ref = af.get('ref')
+#       print_log(f'    AUTOFILTER: {af_ref}')
+        table_filter = FilterInfo()
+        for fc in af.findall('./main:filterColumn', namespaces=NS):
+            filter_info = {
+                'colId': fc.get('colId'),
+                'type': None,
+                'values': [],
+            }
+
+            # normal filters
+            filters = fc.find('./main:filters', namespaces=NS)
+            if filters is not None:
+                filter_info['type'] = 'filters'
+                for f in filters.findall('./main:filter', namespaces=NS):
+                    val = f.get('val')
+                    filter_info['values'].append(val)
+
+            # custom filters
+            custom_filters = fc.find('./main:customFilters', namespaces=NS)
+            if custom_filters is not None:
+                filter_info['type'] = 'customFilters'
+                for cf in custom_filters.findall('./main:customFilter', namespaces=NS):
+                    filter_info['values'].append({
+                        'operator': cf.get('operator'),
+                        'val': cf.get('val'),
+                    })
+
+            # color filter
+            color_filter = fc.find('./main:colorFilter', namespaces=NS)
+            if color_filter is not None:
+                filter_info['type']      = 'colorFilter'
+                filter_info['dxfId']     = color_filter.get('dxfId')
+                filter_info['cellColor'] = color_filter.get('cellColor')
+
+            table_info.filter = table_filter
+#           print_log(f'      FILTER: ' f'col={filter_info["colId"]} ' f'type={filter_info["type"]} ' f'value={filter_info["values"]}')
+
+    # worksheet objectへ保存
+    ws_obj.tables.append(table_info)
+
+
 def parse_drawing_xml(z : zipfile.ZipFile, draw_xml_path : str, ws_obj : WorkSheetXML):
     """
     図形描画のxml解析
@@ -362,9 +497,15 @@ def parse_work_sheet(z : zipfile.ZipFile, wb_obj : WorkBookXML):
     ワークシートのXML解析
     """
     for ws_name, ws_obj in wb_obj.work_sheets.items():
-        print_log(f'------------------------------------------- parse_work_sheet : {ws_name} ({ws_obj.xml_path})-------------------------------------------')
-        #シートのxmlを確認する
+        if (ws_obj.hidden):
+            print_log(f'------------------------------------------- parse_work_sheet : [Hidden]{ws_name} ({ws_obj.xml_path})-------------------------------------------')
+        else:
+            print_log(f'------------------------------------------- parse_work_sheet : {ws_name} ({ws_obj.xml_path})-------------------------------------------')
+
+        # シートのxmlを確認する
         ws_xml = ET.fromstring(z.read(ws_obj.xml_path))
+
+        # セルのチェック
         for c in ws_xml.xpath('//main:c', namespaces=NS):
             cell = CellInfo()
             cell_addr = c.get('r')      # A1 とか
@@ -373,27 +514,39 @@ def parse_work_sheet(z : zipfile.ZipFile, wb_obj : WorkBookXML):
             val = c.find('{*}v')
             cell.type = cell_type
             if val is not None:
-#               print_log(f'  cell1={cell_addr} type={cell_type} value={val.text}')
                 cell.text = val.text
+#               print_log(f'  cell1={cell_addr} type={cell_type} value={cell.text}')
             else:
 #               print_log(f'  cell2={cell_addr} type={cell_type}')
                 cell.text = None
 
-            formula = c.find('{*}f')
-            if formula is not None:
-                cell.formula = formula.text
-#               print_log(f'  cell1={cell_addr} type={cell_type} value={val.text} by formula={cell.formula}')
+            # 式の中のテキストを抽出
+            formula_elem = c.find('{*}f')
+            if formula_elem is not None:
+                formula_type = formula_elem.get('t')
+                if formula_type == 'shared':
+                    si = formula_elem.get('si')
+                    if formula_elem.text:
+                        ws_obj.shared_formulas[si] = formula_elem.text
+                        cell.formula = formula_elem.text
+                    else:
+                        cell.formula = ws_obj.shared_formulas.get(si)
+                else:
+                    cell.formula = formula_elem.text
+
+ #              print_log(f'  cell1={cell_addr} type={cell_type} value={val.text} by formula={cell.formula}')
             else:
                 cell.formula = None
 
             ws_obj.cells[cell_addr] = cell
-       
+
         #シートに紐づくdrawings / commentsをチェックする
         rel_path = get_rels_path(ws_obj.xml_path)
-#       print(f"check for {rel_path} from {ws_obj.xml_path}")
+#       print_log(f"check for {rel_path} from {ws_obj.xml_path}")
         if rel_path in z.namelist():
             rel_xml = ET.fromstring(z.read(rel_path))
             for rel in rel_xml:
+                ws_obj.rels[rel.attrib["Id"]] = rel.attrib["Target"]
                 if "drawing" in rel.attrib["Type"]:
                     draw_xml_path = "xl/drawings/" + rel.attrib["Target"].split("/")[-1]
 #                   print_log(rel.attrib["Target"])
@@ -411,9 +564,44 @@ def parse_work_sheet(z : zipfile.ZipFile, wb_obj : WorkBookXML):
                     comment_obj.xml_path = "xl/" + rel.attrib["Target"].split("/")[-1]
                     parse_comments(z, wb_obj, comment_obj)
                     ws_obj.comments.append(comment_obj)
-                else:
-                    print_log(f'Other Rel : {rel.attrib["Target"]}')
+                elif "table" in rel.attrib["Type"]:
+                    table_xml_path = "xl/tables/" + rel.attrib["Target"].split("/")[-1]
+                    parse_table_xml(z, table_xml_path, ws_obj)
+                    pass
+#               else:
+#                   print_log(f'Other Rel[{rel.attrib["Id"]}][{rel.attrib["Type"]}] : {rel.attrib["Target"]}')
 
+        # ハイパーリンクのチェック
+        for hl in ws_xml.xpath('//main:hyperlink', namespaces=NS):
+            hl_info = HyperLinkInfo()
+            hl_info.ref = hl.get('ref')
+            hl_info.display = hl.get('display')
+            hl_info.location = hl.get('location')
+            hl_info.rid = hl.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
+#           if hl_info.display is not None:
+#               print_log(f'HyperLink[{hl_info.ref}]:{hl_info.display}')
+#           else:
+#               print_log(f'HyperLink[{hl_info.ref}]:{hl_info.rid} -> {ws_obj.rels[hl_info.rid]}')
+
+            ws_obj.hyper_links.append(hl_info)
+        
+        # オートフィルタの情報取得
+        af = ws_xml.find('{*}autoFilter')
+        if af is not None:
+            af_info = FilterInfo()
+            af_info.ref = af.get('ref')
+#           print_log(f'AUTOFILTER RANGE: {af_info.ref}')
+            for fc in af.findall('{*}filterColumn'):
+                col_id = fc.get('colId')
+#               print_log(f'  COLUMN: {col_id}')
+                af_info.filters[col_id] = []
+
+                # とりあえず値の選択フィルタのみParseする。他にもカラーフィルタやカスタムフィルタとかあるけど、今は無視
+                for f in fc.findall('.//{*}filter'):
+                    val = f.get('val')
+#                   print_log(f'    FILTER: {val}')
+                    af_info.filters[col_id].append(val)
+            ws_obj.filter = af_info
     return
 
 
@@ -539,7 +727,7 @@ def parse_work_book(wb_path : str, z : zipfile.ZipFile):
     for rel in wb_rels:
         if "worksheet" in rel.attrib["Type"] or "chartsheet" in rel.attrib["Type"]:
             rid_to_sheetxml[rel.attrib["Id"]] = rel.attrib["Target"]
-#   print(rid_to_sheetxml)
+#   print_log(rid_to_sheetxml)
 
     wb_obj = WorkBookXML(wb_path = wb_path)
     wb_obj.person_info = load_persons(z)
@@ -550,13 +738,27 @@ def parse_work_book(wb_path : str, z : zipfile.ZipFile):
             ws_obj.name = sheet.attrib["name"]
             ws_obj.rid = rid
             ws_obj.xml_path = "xl/" + rid_to_sheetxml[ws_obj.rid]
+            if "state" in sheet.attrib:
+                ws_obj.hidden = (sheet.attrib["state"] == "hidden")
             wb_obj.work_sheets[ws_obj.name] = ws_obj
         else:
             print_log(f'Unknown Sheet Type : rid={ws_obj.rid}')
 
-    parse_work_sheet(z, wb_obj)
+    # 名前の情報を種痘
+    for def_name in wb_xml.xpath("//main:definedName ", namespaces=NS):
+        name_info = DefinedName()
+        name_info.name    = def_name.get('name') 
+        name_info.formula = def_name.text
+        name_info.comment = def_name.get('comment')
+        name_info.hidden = def_name.get('hidden')
+        name_info.local_sheet_id = def_name.get('localSheetId')
+#       print_log(f'{name_info.name}:{name_info.formula}')
+        wb_obj.names[name_info.name] = name_info
+
+
     parse_shared_string(z, wb_obj)
-    return ws_obj
+    parse_work_sheet(z, wb_obj)
+    return wb_obj
 
 def parse_by_xml(wb_path):
     """
@@ -565,13 +767,80 @@ def parse_by_xml(wb_path):
     with zipfile.ZipFile(wb_path) as z:
         wb_obj            = parse_work_book(wb_path, z)
         wb_obj.vba_macros = parse_vba(wb_path)
-    return
+    return wb_obj
+
+
+def convert_all_options():
+    return "BNSVFDGCTMH"
 
 @mcp.tool()
-def grep_work_books(target_path : str, key_word : str, cells : bool = True, sheet_name : bool = True, comments : bool = True, shapes : bool = True, chart : bool = True) -> str:
+def grep_work_book(target_path : str, key_word : str, regex : bool = False, option : str = "all") -> str:
     """
+    Search for a keyword in an Excel file.
+     - target_path: Target file path.
+     - key_word: Keyword to search for. If regex is true, treat this as a regular expression.
+     - regex: Whether to treat the key_word as a regular expression.
+     - option: Search target. "all" searches in all content, or you can specify a specific target using the following codes:
+        N:Defined Name
+        S:Sheet Name
+        V:Cell Value
+        F:Cell Formula
+        D:Shape or drawing
+        G:Graph, Chart
+        C:Comment
+        T:Table
+        M:VBA, Macro
+        H:HyperLink
+        Example: If you want to search for the keyword only in sheet names and cell values, specify "SV".
+    Return value: A string containing the search results. Each line contains the file path, sheet name (if applicable), cell address (if applicable), and the content where the keyword was found.
+    Example return value:
+        [V]sample/test.xlsx:Sheet1!A1:This is a sample text.
+        [F]sample/test.xlsx:Sheet2!B2:=SUM(A1:A10)
+        [C]sample/test.xlsx:Sheet3!Comment1:This is a comment.
+    Note: The actual format of the return value can be designed as needed, but it should contain enough information to identify where the keyword was found.
     """
-    return ''
+    if option == "all":
+        option = convert_all_options()
+    
+    
+    return ""
+
+
+@mcp.tool()
+def grep_work_books(target_path : str, key_word : str, recursive : bool = True, regex : bool = False, option : str = "all") -> str:
+    """
+    Search for a keyword in Excel files under the target path.
+     - target_path: Target file or directory path. If a directory is specified, search for Excel files in the directory. If recursive is true, search for Excel files in subdirectories as well.
+     - key_word: Keyword to search for. If regex is true, treat this as a regular expression.
+     - recursive: Whether to search for Excel files in subdirectories when a directory is specified as the target path.
+     - regex: Whether to treat the key_word as a regular expression.
+     - option: Search target. "all" searches in all content, or you can specify a specific target using the following codes:
+        B:Book File Name
+        N:Defined Name
+        S:Sheet Name
+        V:Cell Value
+        F:Cell Formula
+        D:Shape or drawing
+        G:Graph, Chart
+        C:Comment
+        T:Table
+        M:VBA, Macro
+        H:HyperLink
+        Example: If you want to search for the keyword only in sheet names and cell values, specify "SV".
+     Return value: A string containing the search results. Each line contains the file path, sheet name (if applicable), cell address (if applicable), and the content where the keyword was found.
+     Example return value:
+        [V]sample/test.xlsx:Sheet1!A1:This is a sample text.
+        [F]sample/test.xlsx:Sheet2!B2:=SUM(A1:A10)
+        [C]sample/test.xlsx:Sheet3!Comment1:This is a comment.
+     Note: The actual format of the return value can be designed as needed, but it should contain enough information to identify where the keyword was found.
+    """
+
+    if os.path.isdir(target_path):
+        grep_work_book = ""
+    else:
+        grep_result = grep_work_book(target_path, key_word, regex, option)
+
+    return grep_result
 
 @mcp.tool()
 def get_work_sheet_summary(sheet_name : str, wb_path : str = "") -> str:
@@ -581,11 +850,20 @@ def get_work_sheet_summary(sheet_name : str, wb_path : str = "") -> str:
     return ''
 
 @mcp.tool()
-def get_work_sheet_list(wb_path : str = "") -> str:
+def get_work_sheet_list(wb_path : str) -> str:
     """
     Get the list of sheets in the workbook.
     """
-    return ''
+    global g_current_wb
+
+    if g_current_wb is None or g_current_wb.wb_path != wb_path:
+        g_current_wb = parse_by_xml(wb_path)
+
+    result = []
+    for ws in g_current_wb.work_sheets:
+        result.append(ws)
+
+    return '\n'.join(result)
 
 def main():
     parser = argparse.ArgumentParser(description="")
@@ -595,8 +873,12 @@ def main():
     if args.verbose:
         create_log_file()
 
-    parse_by_xml("sample\\test_macro.xlsm")
+#   parse_by_xml("sample\\test_macro.xlsm")
 #   parse_by_xml("sample\\test_new_comment.xlsx")
+    result = get_work_sheet_list("sample\\test_macro.xlsm")
+    print_log(f'get_work_sheet_list:\n{result}')
+    result = grep_work_books("sample", "コメント", recursive=True, regex=False, option="all")
+    print_log(f'grep_work_books:\n{result}')
 
 #   mcp.run()
 
