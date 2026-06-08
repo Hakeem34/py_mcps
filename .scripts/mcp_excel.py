@@ -59,6 +59,9 @@ class WorkSheetXML:
     tables          : list = dataclasses.field(default_factory=list)
     rels            : dict = dataclasses.field(default_factory=dict)
     filter          : FilterInfo = None
+    page_setup      : dict = dataclasses.field(default_factory=dict)
+    row_breaks      : list = dataclasses.field(default_factory=list)
+    col_breaks      : list = dataclasses.field(default_factory=list)
 
 @dataclasses.dataclass
 class WorkBookXML:
@@ -84,6 +87,8 @@ class TableInfo:
     style          : dict = dataclasses.field(default_factory=dict)
     columns        : list = dataclasses.field(default_factory=list)
     filter         : FilterInfo = None
+    altText        : str = ""
+    altTextSummary : str = ""
 
 
 @dataclasses.dataclass
@@ -407,6 +412,12 @@ def parse_table_xml(z : zipfile.ZipFile, table_xml_path : str, ws_obj : WorkShee
             table_info.filter = table_filter
 #           print_log(f'      FILTER: ' f'col={filter_info["colId"]} ' f'type={filter_info["type"]} ' f'value={filter_info["values"]}')
 
+    for ext_tables in xml.xpath('./main:extLst/main:ext/x14:table', namespaces=NS):
+        if ext_tables is not None:
+            table_info.altText = ext_tables.get('altText', '')
+            table_info.altTextSummary = ext_tables.get('altTextSummary', '')
+#           print_log(f'    altText: {table_info.altText} altTextSummary: {table_info.altTextSummary}')
+
     # worksheet objectへ保存
     ws_obj.tables.append(table_info)
 
@@ -600,6 +611,30 @@ def parse_work_sheet(z : zipfile.ZipFile, wb_obj : WorkBookXML):
 #                   print_log(f'    FILTER: {val}')
                     af_info.filters[col_id].append(val)
             ws_obj.filter = af_info
+
+        # page setup / print settings
+        page_setup_elem = ws_xml.find('{*}pageSetup')
+        if page_setup_elem is not None:
+            for key in ('scale', 'fitToPage', 'fitToWidth', 'fitToHeight', 'orientation', 'paperSize'):
+                value = page_setup_elem.get(key)
+                if value is not None:
+                    ws_obj.page_setup[key] = value
+
+        for brk in ws_xml.findall('.//{*}rowBreaks/{*}brk'):
+            row_id = brk.get('id')
+            if row_id is not None:
+                try:
+                    ws_obj.row_breaks.append(int(row_id))
+                except Exception:
+                    pass
+
+        for brk in ws_xml.findall('.//{*}colBreaks/{*}brk'):
+            col_id = brk.get('id')
+            if col_id is not None:
+                try:
+                    ws_obj.col_breaks.append(int(col_id))
+                except Exception:
+                    pass
     return
 
 
@@ -754,7 +789,10 @@ def parse_work_book(wb_path : str, z : zipfile.ZipFile):
         name_info.hidden = def_name.get('hidden')
         name_info.local_sheet_id = def_name.get('localSheetId')
 #       print_log(f'{name_info.name}:{name_info.formula}')
-        wb_obj.names[name_info.name] = name_info
+        name_key = name_info.name
+        if name_info.local_sheet_id:
+            name_key = f"{name_info.name}:{name_info.local_sheet_id}"
+        wb_obj.names[name_key] = name_info
 
 
     parse_shared_string(z, wb_obj)
@@ -773,6 +811,98 @@ def parse_by_xml(wb_path):
 
 def convert_all_options():
     return "BNSVFDGCTMH"
+
+def _cell_position(address : str):
+    m = re.match(r'^([A-Z]+)(\d+)$', address)
+    if not m:
+        return None, None
+    col_text, row_text = m.groups()
+    col = 0
+    for ch in col_text:
+        col = col * 26 + (ord(ch) - 64)
+    return col, int(row_text)
+
+def _cell_address(col : int, row : int):
+    return f"{get_column_letter(col)}{row}"
+
+def _parse_range_ref(ref : str):
+    if not ref:
+        return None
+    ref = re.sub(r"^([^!]+!)", "", ref)
+    ref = ref.replace('$', '')
+    parts = ref.split(':')
+    if len(parts) != 2:
+        return None
+    start = parts[0]
+    end = parts[1]
+    start_col, start_row = _cell_position(start)
+    end_col, end_row = _cell_position(end)
+    if start_col is None or end_col is None:
+        return None
+    return start_col, start_row, end_col, end_row
+
+def _sheet_local_id(wb_obj : WorkBookXML, sheet_name : str):
+    for idx, name in enumerate(wb_obj.work_sheets):
+        if name == sheet_name:
+            return str(idx)
+    return ""
+
+def _get_print_area(wb_obj : WorkBookXML, sheet_name : str) -> str:
+    sheet_id = _sheet_local_id(wb_obj, sheet_name)
+    areas = []
+    for name_info in wb_obj.names.values():
+        if name_info.name == 'Print_Area' and (name_info.local_sheet_id == sheet_id or name_info.local_sheet_id == ""):
+            if name_info.formula:
+                areas.append(name_info.formula)
+    return ';'.join(areas)
+
+def _get_print_page_count(ws_obj : WorkSheetXML) -> int:
+    if ws_obj.row_breaks or ws_obj.col_breaks:
+        return max(1, len(ws_obj.row_breaks) + 1) * max(1, len(ws_obj.col_breaks) + 1)
+    return 1 if ws_obj.cells else 0
+
+def _get_cell_range(ws_obj : WorkSheetXML):
+    min_row = min_col = None
+    max_row = max_col = None
+    for addr in ws_obj.cells:
+        col, row = _cell_position(addr)
+        if col is None:
+            continue
+        if min_col is None or col < min_col:
+            min_col = col
+        if max_col is None or col > max_col:
+            max_col = col
+        if min_row is None or row < min_row:
+            min_row = row
+        if max_row is None or row > max_row:
+            max_row = row
+    if min_col is None:
+        return ""
+    return f"{_cell_address(min_col, min_row)}:{_cell_address(max_col, max_row)}"
+
+def _get_first_cell_value(ws_obj : WorkSheetXML, wb_obj : WorkBookXML):
+    cell_range = _get_cell_range(ws_obj)
+    if not cell_range:
+        return ""
+    parsed = _parse_range_ref(cell_range)
+    if not parsed:
+        return ""
+    start_col, start_row, _, _ = parsed
+    first_addr = _cell_address(start_col, start_row)
+    return _cell_display_text(ws_obj.cells.get(first_addr), wb_obj)
+
+def _get_autofilter_headers(ws_obj : WorkSheetXML, wb_obj : WorkBookXML):
+    if not ws_obj.filter or not ws_obj.filter.ref:
+        return []
+    parsed = _parse_range_ref(ws_obj.filter.ref)
+    if not parsed:
+        return []
+    start_col, start_row, end_col, _ = parsed
+    headers = []
+    for col in range(start_col, end_col + 1):
+        addr = _cell_address(col, start_row)
+        headers.append(_cell_display_text(ws_obj.cells.get(addr), wb_obj))
+    return headers
 
 def _compile_search_pattern(key_word : str, regex : bool):
     try:
@@ -898,7 +1028,7 @@ def grep_work_book(target_path : str, key_word : str, regex : bool = False, opti
         if 'T' in option_set:
             for table_info in ws_obj.tables:
                 found = False
-                fields = [table_info.name, table_info.disp_name, table_info.ref]
+                fields = [table_info.name, table_info.disp_name, table_info.ref, table_info.altText, table_info.altTextSummary]
                 if table_info.style:
                     fields.extend([str(table_info.style.get('name', '')), str(table_info.style.get('showFirstColumn', '')), str(table_info.style.get('showLastColumn', '')), str(table_info.style.get('showRowStripes', '')), str(table_info.style.get('showColumnStripes', ''))])
                 for col in table_info.columns:
@@ -982,11 +1112,77 @@ def grep_work_books(target_path : str, key_word : str, recursive : bool = True, 
     return '\n'.join(grep_results)
 
 @mcp.tool()
-def get_work_sheet_summary(sheet_name : str, wb_path : str = "") -> str:
+def get_work_sheet_summary(wb_path : str, sheet_name : str = "") -> str:
     """
-    Get a summary of work sheet.
+    Get a summary of a worksheet or all worksheets in the workbook.
+     - wb_path: Workbook file path.
+     - sheet_name: Optional worksheet name. If omitted, summaries for all sheets are returned.
     """
-    return ''
+    global g_current_wb
+    if g_current_wb is None or g_current_wb.wb_path != wb_path:
+        g_current_wb = parse_by_xml(wb_path)
+
+    wb_obj = g_current_wb
+    targets = []
+    if sheet_name:
+        if sheet_name not in wb_obj.work_sheets:
+            return f"Sheet not found: {sheet_name}"
+        targets = [sheet_name]
+    else:
+        targets = list(wb_obj.work_sheets.keys())
+
+    summaries = []
+    for ws_name in targets:
+        ws_obj = wb_obj.work_sheets[ws_name]
+        summary = []
+        summary.append(f"Sheet name: {ws_name}")
+        if ws_obj.hidden:
+            summary.append("State: hidden")
+
+        heading = _get_first_cell_value(ws_obj, wb_obj)
+        summary.append(f"Header cell: {heading if heading else 'None'}")
+
+        valid_range = _get_cell_range(ws_obj)
+        summary.append(f"Used cell range: {valid_range if valid_range else 'None'}")
+
+        shape_count = len(ws_obj.shapes)
+        if shape_count:
+            names = [shape.name for shape in ws_obj.shapes if shape.name]
+            summary.append(f"Shapes: {shape_count} ({', '.join(names)})")
+        else:
+            summary.append("Shapes: 0")
+
+        table_count = len(ws_obj.tables)
+        if table_count:
+            titles = [table_info.disp_name or table_info.name or table_info.ref or "Table" for table_info in ws_obj.tables]
+            summary.append(f"Tables: {table_count} ({', '.join(titles)})")
+        else:
+            summary.append("Tables: 0")
+
+        chart_count = len(ws_obj.charts)
+        if chart_count:
+            titles = [chart.title or chart.xml_path for chart in ws_obj.charts]
+            summary.append(f"Charts: {chart_count} ({', '.join(titles)})")
+        else:
+            summary.append("Charts: 0")
+
+        if ws_obj.filter and ws_obj.filter.ref:
+            headers = _get_autofilter_headers(ws_obj, wb_obj)
+            header_label = ', '.join(headers) if any(headers) else 'None'
+            summary.append(f"AutoFilter: Yes ({ws_obj.filter.ref}) Headers: {header_label}")
+        else:
+            summary.append("AutoFilter: No")
+
+        print_area = _get_print_area(wb_obj, ws_name)
+        summary.append(f"Print area: {'Yes (' + print_area + ')' if print_area else 'No'}")
+
+        summary.append(f"Print page count: {_get_print_page_count(ws_obj)}")
+        scale = ws_obj.page_setup.get('scale') or ''
+        summary.append(f"Print scale: {scale if scale else 'None'}")
+
+        summaries.append('\n'.join(summary))
+
+    return '\n\n'.join(summaries)
 
 @mcp.tool()
 def get_work_sheet_list(wb_path : str) -> str:
@@ -1014,12 +1210,14 @@ def main():
 
 #   parse_by_xml("sample\\test_macro.xlsm")
 #   parse_by_xml("sample\\test_new_comment.xlsx")
-    result = get_work_sheet_list("sample\\test_macro.xlsm")
-    print_log(f'get_work_sheet_list:\n{result}')
-    result = grep_work_books("sample", "コメント", recursive=True, regex=False, option="all")
-    print_log(f'grep_work_books:\n{result}')
+#   result = get_work_sheet_list("sample\\test_macro.xlsm")
+#   print_log(f'get_work_sheet_list:\n{result}')
+#   result = grep_work_books("sample", "コメント", recursive=True, regex=False, option="all")
+#   print_log(f'grep_work_books:\n{result}')
+#   result = get_work_sheet_summary("sample\\test_macro.xlsm", sheet_name=None)
+#   print_log(f'get_work_sheet_summary:\n{result}')
 
-#   mcp.run()
+    mcp.run()
 
 
 if __name__ == "__main__":
