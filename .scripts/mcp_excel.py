@@ -3,8 +3,11 @@ import re
 import sys
 import argparse
 import datetime
+import json
+from unittest import result
 import openpyxl
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import get_column_letter, column_index_from_string
+from openpyxl.utils.cell import coordinate_to_tuple
 
 import zipfile
 import re
@@ -36,34 +39,103 @@ NS_CHART  = {
 NS_TC     = {'tc': 'http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments'}
 NS_PERSON = {'p': 'http://schemas.microsoft.com/office/spreadsheetml/2018/person'}
 
+HEADER_FOOTER_TAGS = ['oddHeader','oddFooter', 'evenHeader','evenFooter', 'firstHeader','firstFooter']
 
-@dataclasses.dataclass
+
+@dataclasses.dataclass(slots=True)
 class CellInfo:
-    text     : str = ""
+    value    : str = ""
     formula  : str = ""
+    style_Id : str = ""
     type     : str = ""
 
-@dataclasses.dataclass
-class WorkSheetXML:
-    rid             : str = ""
-    name            : str = ""
-    xml_path        : str = ""
-    hidden          : bool = False
-    cells           : dict = dataclasses.field(default_factory=dict)
-    comments        : list = dataclasses.field(default_factory=list)
-    images          : list = dataclasses.field(default_factory=list)
-    charts          : list = dataclasses.field(default_factory=list)
-    shapes          : list = dataclasses.field(default_factory=list)
-    shared_formulas : dict = dataclasses.field(default_factory=dict)
-    hyper_links     : list = dataclasses.field(default_factory=list)
-    tables          : list = dataclasses.field(default_factory=list)
-    rels            : dict = dataclasses.field(default_factory=dict)
-    filter          : FilterInfo = None
-    page_setup      : dict = dataclasses.field(default_factory=dict)
-    row_breaks      : list = dataclasses.field(default_factory=list)
-    col_breaks      : list = dataclasses.field(default_factory=list)
+@dataclasses.dataclass(slots=True)
+class FillInfo:
+    patternType : str = ""
+    fgColor     : dict = dataclasses.field(default_factory=dict)
+    bgColor     : dict = dataclasses.field(default_factory=dict)
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
+class FontInfo:
+    name        : str = ""
+    charset     : str = ""
+    family      : str = ""
+    color       : dict = dataclasses.field(default_factory=dict)
+    size        : int = 0
+
+@dataclasses.dataclass(slots=True)
+class BorderInfo:
+    left         : dict = dataclasses.field(default_factory=dict)
+    right        : dict = dataclasses.field(default_factory=dict)
+    top          : dict = dataclasses.field(default_factory=dict)
+    bottom       : dict = dataclasses.field(default_factory=dict)
+    diagonal     : dict = dataclasses.field(default_factory=dict)
+
+@dataclasses.dataclass(slots=True)
+class cellXfsInfo:
+    numFmt_Id : str = ""
+    font_Id   : str = ""
+    fill_Id   : str = ""
+    border_Id : str = ""
+    xf_Id     : str = ""
+    alignment : dict = dataclasses.field(default_factory=dict)
+    apply     : dict = dataclasses.field(default_factory=dict)
+
+@dataclasses.dataclass(slots=True)
+class cellStyleInfo:
+    name      : str = ""
+    numFmt_Id : str = ""
+    font_Id   : str = ""
+    fill_Id   : str = ""
+    border_Id : str = ""
+    xf_Id     : str = ""
+    alignment : dict = dataclasses.field(default_factory=dict)
+    apply     : dict = dataclasses.field(default_factory=dict)
+
+@dataclasses.dataclass(slots=True)
+class StylesInfo:
+    numFmts    : dict = dataclasses.field(default_factory=dict)
+    cellStyles : list = dataclasses.field(default_factory=list)
+    cellXfs    : list = dataclasses.field(default_factory=list)
+    fonts      : list = dataclasses.field(default_factory=list)
+    borders    : list = dataclasses.field(default_factory=list)
+    fills      : list = dataclasses.field(default_factory=list)
+    dxfs       : list = dataclasses.field(default_factory=list)
+
+@dataclasses.dataclass(slots=True)
+class WorkSheetXML:
+    rid                : str = ""
+    name               : str = ""
+    xml_path           : str = ""
+    dimension          : str = ""
+    max_row            : int = -1
+    min_row            : int = -1
+    max_col            : int = -1
+    min_col            : int = -1
+    cell_count         : int = 0
+    hidden             : bool = False
+    show_grid_lines    : bool = True
+    merge_cells        : list = dataclasses.field(default_factory=list)
+    default_col_width  : str = ""
+    default_row_height : str = ""
+    outlineLevelRow    : int = 0
+    outlineLevelCol    : int = 0
+    header_footer      : dict = dataclasses.field(default_factory=dict)
+    cells              : dict = dataclasses.field(default_factory=dict)
+    comments           : list = dataclasses.field(default_factory=list)
+    images             : list = dataclasses.field(default_factory=list)
+    charts             : list = dataclasses.field(default_factory=list)
+    shapes             : list = dataclasses.field(default_factory=list)
+    shared_formulas    : dict = dataclasses.field(default_factory=dict)
+    hyper_links        : list = dataclasses.field(default_factory=list)
+    tables             : list = dataclasses.field(default_factory=list)
+    rels               : dict = dataclasses.field(default_factory=dict)
+    filter             : FilterInfo = None
+    page_setup         : dict = dataclasses.field(default_factory=dict)
+    row_breaks         : list = dataclasses.field(default_factory=list)
+    col_breaks         : list = dataclasses.field(default_factory=list)
+
+@dataclasses.dataclass(slots=True)
 class WorkBookXML:
     wb_path        : str
     work_sheets    : dict = dataclasses.field(default_factory=dict)
@@ -71,13 +143,14 @@ class WorkBookXML:
     shared_strings : list = dataclasses.field(default_factory=list)
     person_info    : dict = dataclasses.field(default_factory=dict)
     names          : dict = dataclasses.field(default_factory=dict)
+    styles_info    : StylesInfo = dataclasses.field(default_factory=StylesInfo)
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class FilterInfo:
     ref            : str = ""
     filters        : dict = dataclasses.field(default_factory=dict)
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class TableInfo:
     rid            : str = ""
     id             : str = ""
@@ -91,7 +164,7 @@ class TableInfo:
     altTextSummary : str = ""
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class DefinedName:
     name            : str = ""
     formula         : str = ""
@@ -99,24 +172,24 @@ class DefinedName:
     local_sheet_id  : str = ""
     hidden          : str = ""
     
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class SharedString:
     text           : str = ""
     ruby           : str = ""
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class CommentInfo:
     author      : str
     cell        : str
     text        : str
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class CommentXML:
     new_comment : bool = False
     xml_path    : str = ""
     comments    : list = dataclasses.field(default_factory=list)
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class ShapeInfo:
     id       : int = 0
     type     : str = "sp"
@@ -132,21 +205,21 @@ class ShapeInfo:
     height   : int = 0
     children : list = dataclasses.field(default_factory=list)
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class HyperLinkInfo:
     ref      : str = ""
     location : str = ""
     display  : str = ""
     rid      : str = ""
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class ChartInfo:
     xml_path : str = ""
     title    : str = ""
     series   : list = dataclasses.field(default_factory=list)
     axis     : dict = dataclasses.field(default_factory=dict)
 
-@dataclasses.dataclass
+@dataclasses.dataclass(slots=True)
 class VBA_macro:
     module   : str = ""
     lines    : list = dataclasses.field(default_factory=list)
@@ -501,6 +574,43 @@ def parse_vba(wb_path):
 
     return vba_macros
 
+def parse_cell(ws_obj : WorkSheetXML, cell_elem):
+    """
+    セルの解析
+    """
+    cell = CellInfo()
+    cell_addr = cell_elem.get('r')      # A1 とか
+    cell_type = cell_elem.get('t')      # s, inlineStr, b など
+    cell_style = cell_elem.get('s')
+    val = cell_elem.find('{*}v')
+    cell.type = cell_type
+    if val is not None:
+        cell.value = val.text
+#       print_log(f'  cell1={cell_addr} type={cell_type} value={cell.value}')
+    else:
+        cell.value = None
+#       print_log(f'  cell2={cell_addr} type={cell_type}')
+
+    # 式の中のテキストを抽出
+    formula_elem = cell_elem.find('{*}f')
+    if formula_elem is not None:
+        formula_type = formula_elem.get('t')
+        if formula_type == 'shared':
+            si = formula_elem.get('si')
+            if formula_elem.text:
+                ws_obj.shared_formulas[si] = formula_elem.text
+                cell.formula = formula_elem.text
+            else:
+                cell.formula = ws_obj.shared_formulas.get(si)
+        else:
+            cell.formula = formula_elem.text
+#           print_log(f'  cell1={cell_addr} type={cell_type} value={val.text} by formula={cell.formula}')
+    else:
+        cell.formula = None
+
+    cell.style_Id = cell_style
+    ws_obj.cells[cell_addr] = cell
+
 def parse_work_sheet(z : zipfile.ZipFile, wb_obj : WorkBookXML):
     """
     ワークシートのXML解析
@@ -514,40 +624,66 @@ def parse_work_sheet(z : zipfile.ZipFile, wb_obj : WorkBookXML):
         # シートのxmlを確認する
         ws_xml = ET.fromstring(z.read(ws_obj.xml_path))
 
+        merge_cells = ws_xml.find('./main:mergeCells', namespaces=NS)
+        if merge_cells is not None:
+            print_log(f'  merge_cells : {merge_cells}')
+            for mc in merge_cells.findall('./main:mergeCell', namespaces=NS):
+                print(mc.get('ref'))
+                ws_obj.merge_cells.append(mc.get('ref'))
+
+        # sheetFormatPrのチェック
+        sheet_format_pr = ws_xml.find('./main:sheetFormatPr', namespaces=NS)
+        if sheet_format_pr is not None:
+            ws_obj.default_col_width = sheet_format_pr.get('defaultColWidth')
+            ws_obj.default_row_height = sheet_format_pr.get('defaultRowHeight')
+            ws_obj.outlineLevelRow = int(sheet_format_pr.get('outlineLevelRow', '0'))
+            ws_obj.outlineLevelCol = int(sheet_format_pr.get('outlineLevelCol', '0'))
+#           print_log(f'  defaultColWidth: {ws_obj.default_col_width} defaultRowHeight: {ws_obj.default_row_height}, outlineLevelRow: {ws_obj.outlineLevelRow} outlineLevelCol: {ws_obj.outlineLevelCol}')
+
+        # 枠線表示の設定
+        for sv in ws_xml.xpath('//main:sheetView', namespaces=NS):
+            if sv.get('showGridLines') == '0':
+                ws_obj.show_grid_lines = False
+            else:
+                ws_obj.show_grid_lines = True
+#           print_log(f'  showGridLines: {ws_obj.show_grid_lines}')
+
+        # dimensionのチェック
+        for dim in ws_xml.xpath('//main:dimension', namespaces=NS):
+            ref = dim.get('ref')
+#           print_log(f'  dimension: {ref}')
+            ws_obj.dimension = ref
+
+        # ヘッダ / フッタのチェック
+        header_footer = ws_xml.find('./main:headerFooter', namespaces=NS)
+        if header_footer is not None:
+            for tag in HEADER_FOOTER_TAGS:
+                elem = header_footer.find(f'./main:{tag}', namespaces=NS)
+                if elem is not None and elem.text:
+#                   print_log(f'  {tag}: {elem.text}')
+                    ws_obj.header_footer[tag] = elem.text
+
         # セルのチェック
         for c in ws_xml.xpath('//main:c', namespaces=NS):
-            cell = CellInfo()
-            cell_addr = c.get('r')      # A1 とか
-            cell_type = c.get('t')      # s, inlineStr, b など
-            cell_style = c.get('s')
-            val = c.find('{*}v')
-            cell.type = cell_type
-            if val is not None:
-                cell.text = val.text
-#               print_log(f'  cell1={cell_addr} type={cell_type} value={cell.text}')
-            else:
-#               print_log(f'  cell2={cell_addr} type={cell_type}')
-                cell.text = None
+            parse_cell(ws_obj, c)
 
-            # 式の中のテキストを抽出
-            formula_elem = c.find('{*}f')
-            if formula_elem is not None:
-                formula_type = formula_elem.get('t')
-                if formula_type == 'shared':
-                    si = formula_elem.get('si')
-                    if formula_elem.text:
-                        ws_obj.shared_formulas[si] = formula_elem.text
-                        cell.formula = formula_elem.text
-                    else:
-                        cell.formula = ws_obj.shared_formulas.get(si)
-                else:
-                    cell.formula = formula_elem.text
+        # セルのアドレスから、シートの最大行/列と有効な値を持つセル数をカウントする
+        for cell_addr, cell in ws_obj.cells.items():
+            col_str = re.sub(r'\d', '', cell_addr)
+            row_str = re.sub(r'\D', '', cell_addr)
+            col = column_index_from_string(col_str)
+            row = int(row_str)
+            if ws_obj.max_row == -1 or row > ws_obj.max_row:
+                ws_obj.max_row = row
+            if ws_obj.min_row == -1 or row < ws_obj.min_row:
+                ws_obj.min_row = row
+            if ws_obj.max_col == -1 or col > ws_obj.max_col:
+                ws_obj.max_col = col
+            if ws_obj.min_col == -1 or col < ws_obj.min_col:
+                ws_obj.min_col = col
 
- #              print_log(f'  cell1={cell_addr} type={cell_type} value={val.text} by formula={cell.formula}')
-            else:
-                cell.formula = None
-
-            ws_obj.cells[cell_addr] = cell
+            if cell.value is not None:
+                ws_obj.cell_count += 1
 
         #シートに紐づくdrawings / commentsをチェックする
         rel_path = get_rels_path(ws_obj.xml_path)
@@ -681,6 +817,90 @@ def parse_chart(z : zipfile.ZipFile, chart_path : str, ws_obj : WorkSheetXML):
     ws_obj.charts.append(chart_info)
     return chart_info
  
+def parse_styles(z : zipfile.ZipFile, wb_obj : WorkBookXML):
+    """
+    スタイルのxml解析
+    """
+    print_log(f'------------------------------------------- parse_styles -------------------------------------------')
+    if 'xl/styles.xml' in z.namelist():
+        styles_xml = ET.fromstring(z.read('xl/styles.xml'))
+        # number formats
+        for num_fmt in styles_xml.xpath('//main:numFmts/main:numFmt', namespaces=NS):
+            numFmtId = num_fmt.get('numFmtId')
+            formatCode = num_fmt.get('formatCode')
+            wb_obj.styles_info.numFmts[numFmtId] = formatCode.replace('""', '')    # ”コ””メ””ン””ト”などの単文字を連結してテキストに戻す
+            print_log(f'numFmtId={numFmtId} formatCode={wb_obj.styles_info.numFmts[numFmtId]}')
+        
+        # fonts
+        for font in styles_xml.xpath('//main:fonts/main:font', namespaces=NS):
+            font_info = FontInfo()
+            name = font.find('./main:name', namespaces=NS)
+            if name is not None:
+                font_info.name = name.get('val')
+            color = font.find('./main:color', namespaces=NS)
+            if color is not None:
+                font_info.color = color.attrib
+            sz = font.find('./main:sz', namespaces=NS)
+            if sz is not None:
+                font_info.size = sz.get('val')
+            charset = font.find('./main:charset', namespaces=NS)
+            if charset is not None:
+                font_info.charset = charset.get('val')
+            family = font.find('./main:family', namespaces=NS)
+            if family is not None:
+                font_info.family = family.get('val')
+
+            print_log(f'font name={font_info.name}, color={font_info.color}, size={font_info.size}, charset={font_info.charset}, family={font_info.family}')
+            wb_obj.styles_info.fonts.append(font_info)
+        
+        # fills
+        for fill in styles_xml.xpath('//main:fills/main:fill', namespaces=NS):
+            fill_info = FillInfo()
+            pattern_fill = fill.find('./main:patternFill', namespaces=NS)
+            if pattern_fill is not None:
+                fill_info.patternType = pattern_fill.get('patternType')
+                fg_color = pattern_fill.find('./main:fgColor', namespaces=NS)
+                if fg_color is not None:
+                    fill_info.fgColor = fg_color.attrib
+                bg_color = pattern_fill.find('./main:bgColor', namespaces=NS)
+                if bg_color is not None:
+                    fill_info.bgColor = bg_color.attrib
+            print_log(f'fill patternType={fill_info.patternType}, fg_color={fill_info.fgColor}, bg_color={fill_info.bgColor}')
+            wb_obj.styles_info.fills.append(fill_info)
+
+        # borders
+        for border in styles_xml.xpath('//main:borders/main:border', namespaces=NS):
+            border_info = BorderInfo()
+            for position in ['left', 'right', 'top', 'bottom']:
+                border_side = border.find(f'./main:{position}', namespaces=NS)
+                if border_side is not None:
+                    border_info.__getattribute__(position)['style'] = border_side.attrib.get('style')
+                    color = border.find(f'./main:{position}/main:color', namespaces=NS)
+                if color is not None:
+#                   print_log(f'border left color={color.attrib}')
+                    border_info.__getattribute__(position)['color'] = color.attrib
+            if border.attrib.get('diagonalUp') == '1':
+                border_info.diagonal["up"] = True
+            else:
+                border_info.diagonal["up"] = False
+
+            if border.attrib.get('diagonalDown') == '1':
+                border_info.diagonal["down"] = True
+            else:
+                border_info.diagonal["down"] = False
+
+#           print_log(f'border diagonal up={border_info.diagonal["up"]}, down={border_info.diagonal["down"]}, l={border_info.left}, r={border_info.right}, t={border_info.top}, b={border_info.bottom}')
+            wb_obj.styles_info.borders.append(border_info)
+
+        # cellStyleXfs
+        for cell_style_xf in styles_xml.xpath('//main:cellStyleXfs/main:xf', namespaces=NS):
+            cell_style_info = cellStyleInfo()
+            cell_style_info.numFmt_Id = cell_style_xf.get('numFmtId')
+
+#           print_log(f'cellStyleXfs numFmtId={cell_style_info.numFmt_Id}')
+            wb_obj.styles_info.cellStyles.append(cell_style_info)
+
+
 def parse_shared_string(z : zipfile.ZipFile, wb_obj : WorkBookXML):
     """
     共有文字列のxml解析
@@ -796,6 +1016,7 @@ def parse_work_book(wb_path : str, z : zipfile.ZipFile):
 
 
     parse_shared_string(z, wb_obj)
+    parse_styles(z, wb_obj)
     parse_work_sheet(z, wb_obj)
     return wb_obj
 
@@ -810,16 +1031,14 @@ def parse_by_xml(wb_path):
 
 
 def convert_all_options():
-    return "BNSVFDGCTMH"
+    return "BNSVFDGCTMHUP"
 
 def _cell_position(address : str):
     m = re.match(r'^([A-Z]+)(\d+)$', address)
     if not m:
         return None, None
     col_text, row_text = m.groups()
-    col = 0
-    for ch in col_text:
-        col = col * 26 + (ord(ch) - 64)
+    col = column_index_from_string(col_text)  # これで正しいかどうかもチェック
     return col, int(row_text)
 
 def _cell_address(col : int, row : int):
@@ -861,24 +1080,17 @@ def _get_print_page_count(ws_obj : WorkSheetXML) -> int:
         return max(1, len(ws_obj.row_breaks) + 1) * max(1, len(ws_obj.col_breaks) + 1)
     return 1 if ws_obj.cells else 0
 
+
 def _get_cell_range(ws_obj : WorkSheetXML):
-    min_row = min_col = None
-    max_row = max_col = None
-    for addr in ws_obj.cells:
-        col, row = _cell_position(addr)
-        if col is None:
-            continue
-        if min_col is None or col < min_col:
-            min_col = col
-        if max_col is None or col > max_col:
-            max_col = col
-        if min_row is None or row < min_row:
-            min_row = row
-        if max_row is None or row > max_row:
-            max_row = row
-    if min_col is None:
-        return ""
-    return f"{_cell_address(min_col, min_row)}:{_cell_address(max_col, max_row)}"
+    """
+    有効なセルの範囲をA1形式で返す。セルがない場合はNoneを返す。
+    """
+    if ws_obj.min_col >= 0 and ws_obj.min_row >= 0 and ws_obj.max_col >= 0 and ws_obj.max_row >= 0:
+        range = get_column_letter(ws_obj.min_col) + str(ws_obj.min_row) + ":" + get_column_letter(ws_obj.max_col) + str(ws_obj.max_row)
+    else:
+        range = None
+
+    return range
 
 def _get_first_cell_value(ws_obj : WorkSheetXML, wb_obj : WorkBookXML):
     cell_range = _get_cell_range(ws_obj)
@@ -915,7 +1127,7 @@ def _compile_search_pattern(key_word : str, regex : bool):
 def _cell_display_text(cell : CellInfo, wb_obj : WorkBookXML) -> str:
     if cell is None:
         return ""
-    value = cell.text or ""
+    value = cell.value or ""
     if cell.type == 's' and value:
         try:
             idx = int(value)
@@ -924,6 +1136,22 @@ def _cell_display_text(cell : CellInfo, wb_obj : WorkBookXML) -> str:
         except Exception:
             pass
     return value
+
+def _range_to_addr_list(range_addr: str) -> list:
+    ranges = range_addr.split(':')
+    top_left = ranges[0]
+    bottom_right = ranges[1] if len(ranges) > 1 else top_left
+    min_row, min_col = coordinate_to_tuple(top_left)
+    max_row, max_col = coordinate_to_tuple(bottom_right)
+
+    addr_list = []
+    for row in range(min_row, max_row + 1):
+        for col in range(min_col, max_col + 1):
+#           addr_list.append(f"{get_column_letter(col)}{row}")
+            addr_list.append(_cell_address(col, row))
+
+    return addr_list
+
 
 def _matches(pattern, text : str) -> bool:
     if not text:
@@ -948,6 +1176,8 @@ def grep_work_book(target_path : str, key_word : str, regex : bool = False, opti
         T:Table
         M:VBA, Macro
         H:HyperLink
+        U:Custom number format
+        P:Header / Footer
         Example: If you want to search for the keyword only in sheet names and cell values, specify "SV".
     Return value: A string containing the search results. Each line contains the file path, sheet name (if applicable), cell address (if applicable), and the content where the keyword was found.
     Example return value:
@@ -956,6 +1186,7 @@ def grep_work_book(target_path : str, key_word : str, regex : bool = False, opti
         [C]sample/test.xlsx:Sheet3!Comment1:This is a comment.
     Note: The actual format of the return value can be designed as needed, but it should contain enough information to identify where the keyword was found.
     """
+    print_log(f'grep_work_book: target_path={target_path}, key_word={key_word}, regex={regex}, option={option}')
     if option == "all":
         option = convert_all_options()
 
@@ -975,6 +1206,12 @@ def grep_work_book(target_path : str, key_word : str, regex : bool = False, opti
         file_name = os.path.basename(target_path)
         if _matches(matcher, file_name) or _matches(matcher, target_path):
             results.append(f"[B]{target_path}:{file_name}")
+
+    if 'U' in option_set:
+        for id, value in wb_obj.styles_info.numFmts.items():
+            print_log(f'num_fmt({id}): {value}')
+            if _matches(matcher, value):
+                results.append(f"[U]{target_path}:{value}")
 
     if 'N' in option_set:
         for name_info in wb_obj.names.values():
@@ -1049,6 +1286,13 @@ def grep_work_book(target_path : str, key_word : str, regex : bool = False, opti
                     ident = hl.ref or hl.location or hl.display or "HyperLink"
                     display = hl.display or hl.location or ""
                     results.append(f"[H]{target_path}:{ws_name}!{ident}:{display}")
+        
+        if 'P' in option_set:
+            header_footer = ws_obj.header_footer
+            for tag in HEADER_FOOTER_TAGS:
+#               print_log(f'header_footer.{tag}: {header_footer.get(tag, "")}')
+                if tag in header_footer and _matches(matcher, header_footer[tag] or ""):
+                    results.append(f"[P]{target_path}:{ws_name}:{tag}:{header_footer[tag]}")
 
     if 'M' in option_set:
         for macro in wb_obj.vba_macros:
@@ -1084,6 +1328,8 @@ def grep_work_books(target_path : str, key_word : str, recursive : bool = True, 
         T:Table
         M:VBA, Macro
         H:HyperLink
+        U:Custom number format
+        P:Header / Footer
         Example: If you want to search for the keyword only in sheet names and cell values, specify "SV".
      Return value: A string containing the search results. Each line contains the file path, sheet name (if applicable), cell address (if applicable), and the content where the keyword was found.
      Example return value:
@@ -1093,6 +1339,7 @@ def grep_work_books(target_path : str, key_word : str, recursive : bool = True, 
      Note: The actual format of the return value can be designed as needed, but it should contain enough information to identify where the keyword was found.
     """
 
+    print_log(f'grep_work_books: target_path={target_path}, key_word={key_word}, recursive={recursive}, regex={regex}, option={option}')
     grep_results = []
     if os.path.isdir(target_path):
         for root, dirs, files in os.walk(target_path):
@@ -1119,6 +1366,8 @@ def get_work_sheet_summary(wb_path : str, sheet_name : str = "") -> str:
      - sheet_name: Optional worksheet name. If omitted, summaries for all sheets are returned.
     """
     global g_current_wb
+
+    print_log(f'get_work_sheet_summary: wb_path={wb_path}, sheet_name={sheet_name}')
     if g_current_wb is None or g_current_wb.wb_path != wb_path:
         g_current_wb = parse_by_xml(wb_path)
 
@@ -1170,15 +1419,27 @@ def get_work_sheet_summary(wb_path : str, sheet_name : str = "") -> str:
             headers = _get_autofilter_headers(ws_obj, wb_obj)
             header_label = ', '.join(headers) if any(headers) else 'None'
             summary.append(f"AutoFilter: Yes ({ws_obj.filter.ref}) Headers: {header_label}")
-        else:
-            summary.append("AutoFilter: No")
 
-        print_area = _get_print_area(wb_obj, ws_name)
-        summary.append(f"Print area: {'Yes (' + print_area + ')' if print_area else 'No'}")
+        if ws_obj.outlineLevelRow != 0 or ws_obj.outlineLevelCol != 0:
+            summary.append(f"Outline levels - Row: {ws_obj.outlineLevelRow}, Column: {ws_obj.outlineLevelCol}")
 
-        summary.append(f"Print page count: {_get_print_page_count(ws_obj)}")
-        scale = ws_obj.page_setup.get('scale') or ''
-        summary.append(f"Print scale: {scale if scale else 'None'}")
+        if ws_obj.comments:
+            comment_summaries = []
+            for comment_obj in ws_obj.comments:
+                for comment in comment_obj.comments:
+                    author_part = f"{comment.author}:" if comment.author else ""
+                    comment_summaries.append(f"{author_part}{comment.cell}:{comment.text}")
+            summary.append(f"Comments: {len(ws_obj.comments)} ({'; '.join(comment_summaries)})")
+        
+        if ws_obj.merge_cells:
+            summary.append(f"Merged cells: {len(ws_obj.merge_cells)} ({', '.join(ws_obj.merge_cells)})")
+
+#       print_area = _get_print_area(wb_obj, ws_name)
+#       summary.append(f"Print area: {'Yes (' + print_area + ')' if print_area else 'No'}")
+
+#       summary.append(f"Print page count: {_get_print_page_count(ws_obj)}")
+#       scale = ws_obj.page_setup.get('scale') or ''
+#       summary.append(f"Print scale: {scale if scale else 'None'}")
 
         summaries.append('\n'.join(summary))
 
@@ -1191,6 +1452,7 @@ def get_work_sheet_list(wb_path : str) -> str:
     """
     global g_current_wb
 
+    print_log(f'get_work_sheet_list: wb_path={wb_path}')
     if g_current_wb is None or g_current_wb.wb_path != wb_path:
         g_current_wb = parse_by_xml(wb_path)
 
@@ -1199,6 +1461,38 @@ def get_work_sheet_list(wb_path : str) -> str:
         result.append(ws)
 
     return '\n'.join(result)
+
+@mcp.tool()
+def get_cell_values(wb_path : str, sheet_name : str, cell_range : str) -> str:
+    """
+    Get the value of a specific cells with valid value.
+     - wb_path: Workbook file path.
+     - sheet_name: Worksheet name.
+     - cell_range: Cell range in A1 format (e.g., "B2:D5").
+    """
+    global g_current_wb
+
+    print_log(f'get_cell_values: wb_path={wb_path}, sheet_name={sheet_name}, cell_range={cell_range}')
+    if g_current_wb is None or g_current_wb.wb_path != wb_path:
+        g_current_wb = parse_by_xml(wb_path)
+
+    wb_obj = g_current_wb
+    if sheet_name not in wb_obj.work_sheets:
+        return f"Sheet not found: {sheet_name}"
+    
+    addrs = _range_to_addr_list(cell_range)  # これでセル範囲の形式が正しいかどうかもチェック
+    ws_obj = wb_obj.work_sheets[sheet_name]
+    results = {}
+    for cell_addr in addrs:
+        cell = ws_obj.cells.get(cell_addr)
+        if cell and cell.value is not None:
+            value = _cell_display_text(cell, wb_obj)
+#           print_log(f'{cell_addr}: {value}')
+            results[cell_addr] = value
+
+    json_value = json.dumps(results, ensure_ascii=False)
+    print_log(f'Cell values (json): {json_value}')
+    return f"Cell range not found: {cell_range}"
 
 def main():
     parser = argparse.ArgumentParser(description="")
@@ -1216,6 +1510,8 @@ def main():
 #   print_log(f'grep_work_books:\n{result}')
 #   result = get_work_sheet_summary("sample\\test_macro.xlsm", sheet_name=None)
 #   print_log(f'get_work_sheet_summary:\n{result}')
+#   result = get_cell_values("sample\\test_macro.xlsm", "オートフィルタ", "B2:G22")
+#   print_log(f'get_cell_values:\n{result}')
 
     mcp.run()
 
