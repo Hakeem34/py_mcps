@@ -4,6 +4,7 @@ import sys
 import argparse
 import datetime
 import json
+import posixpath
 from unittest import result
 import openpyxl
 from openpyxl.utils import get_column_letter, column_index_from_string
@@ -13,6 +14,8 @@ import zipfile
 import re
 from lxml import etree as ET
 from oletools.olevba import VBA_Parser
+
+from difflib import SequenceMatcher
 
 import dataclasses
 from pathlib import Path
@@ -626,9 +629,9 @@ def parse_work_sheet(z : zipfile.ZipFile, wb_obj : WorkBookXML):
 
         merge_cells = ws_xml.find('./main:mergeCells', namespaces=NS)
         if merge_cells is not None:
-            print_log(f'  merge_cells : {merge_cells}')
+#           print_log(f'  merge_cells : {merge_cells}')
             for mc in merge_cells.findall('./main:mergeCell', namespaces=NS):
-                print(mc.get('ref'))
+#               print(mc.get('ref'))
                 ws_obj.merge_cells.append(mc.get('ref'))
 
         # sheetFormatPrのチェック
@@ -829,7 +832,7 @@ def parse_styles(z : zipfile.ZipFile, wb_obj : WorkBookXML):
             numFmtId = num_fmt.get('numFmtId')
             formatCode = num_fmt.get('formatCode')
             wb_obj.styles_info.numFmts[numFmtId] = formatCode.replace('""', '')    # ”コ””メ””ン””ト”などの単文字を連結してテキストに戻す
-            print_log(f'numFmtId={numFmtId} formatCode={wb_obj.styles_info.numFmts[numFmtId]}')
+#           print_log(f'numFmtId={numFmtId} formatCode={wb_obj.styles_info.numFmts[numFmtId]}')
         
         # fonts
         for font in styles_xml.xpath('//main:fonts/main:font', namespaces=NS):
@@ -850,7 +853,7 @@ def parse_styles(z : zipfile.ZipFile, wb_obj : WorkBookXML):
             if family is not None:
                 font_info.family = family.get('val')
 
-            print_log(f'font name={font_info.name}, color={font_info.color}, size={font_info.size}, charset={font_info.charset}, family={font_info.family}')
+#           print_log(f'font name={font_info.name}, color={font_info.color}, size={font_info.size}, charset={font_info.charset}, family={font_info.family}')
             wb_obj.styles_info.fonts.append(font_info)
         
         # fills
@@ -865,7 +868,7 @@ def parse_styles(z : zipfile.ZipFile, wb_obj : WorkBookXML):
                 bg_color = pattern_fill.find('./main:bgColor', namespaces=NS)
                 if bg_color is not None:
                     fill_info.bgColor = bg_color.attrib
-            print_log(f'fill patternType={fill_info.patternType}, fg_color={fill_info.fgColor}, bg_color={fill_info.bgColor}')
+#           print_log(f'fill patternType={fill_info.patternType}, fg_color={fill_info.fgColor}, bg_color={fill_info.bgColor}')
             wb_obj.styles_info.fills.append(fill_info)
 
         # borders
@@ -1158,6 +1161,20 @@ def _matches(pattern, text : str) -> bool:
         return False
     return bool(pattern.search(text))
 
+
+def _sanitize_sheet_name(sheet_name : str) -> str:
+    safe_name = re.sub(r'[\\/*?:"<>|]+', '_', sheet_name or 'Sheet')
+    safe_name = safe_name.strip() or 'Sheet'
+    return safe_name
+
+
+def _resolve_zip_part_path(base_path : str, target : str) -> str:
+    if not target:
+        return ""
+    if target.startswith('/'):
+        return target.lstrip('/')
+    return posixpath.normpath(posixpath.join(posixpath.dirname(base_path), target))
+
 @mcp.tool()
 def grep_work_book(target_path : str, key_word : str, regex : bool = False, option : str = "all") -> str:
     """
@@ -1446,6 +1463,72 @@ def get_work_sheet_summary(wb_path : str, sheet_name : str = "") -> str:
     return '\n\n'.join(summaries)
 
 @mcp.tool()
+def get_work_sheets_diff(wb_path_left : str, wb_path_right : str) -> str:
+    """
+    Compare the worksheets of two workbooks and return the differences.
+     - wb_path_left: Path to the first workbook.
+     - wb_path_right: Path to the second workbook.
+    Return value: A JSON array of differences. Each item contains:
+        sheet, addr or shape, left, right
+    """
+    wb_obj_l = parse_by_xml(wb_path_left)
+    wb_obj_r = parse_by_xml(wb_path_right)
+
+    diffs = []
+    sheet_names = sorted(set(wb_obj_l.work_sheets.keys()) | set(wb_obj_r.work_sheets.keys()))
+    for sheet_name in sheet_names:
+        ws_l = wb_obj_l.work_sheets.get(sheet_name)
+        ws_r = wb_obj_r.work_sheets.get(sheet_name)
+
+        if ws_l is None or ws_r is None:
+            source_ws = ws_l or ws_r
+            if source_ws is None:
+                continue
+            for cell_addr, cell in sorted(source_ws.cells.items()):
+                left_text = _cell_display_text(cell, wb_obj_l) if ws_l is not None else ""
+                right_text = _cell_display_text(cell, wb_obj_r) if ws_r is not None else ""
+                if left_text != right_text:
+                    diffs.append({
+                        "sheet": sheet_name,
+                        "addr": cell_addr,
+                        "left": left_text,
+                        "right": right_text,
+                    })
+            continue
+
+        all_addrs = sorted(set(ws_l.cells.keys()) | set(ws_r.cells.keys()))
+        for cell_addr in all_addrs:
+            left_cell = ws_l.cells.get(cell_addr)
+            right_cell = ws_r.cells.get(cell_addr)
+            left_text = _cell_display_text(left_cell, wb_obj_l) if left_cell is not None else ""
+            right_text = _cell_display_text(right_cell, wb_obj_r) if right_cell is not None else ""
+            if left_text != right_text:
+                diffs.append({
+                    "sheet": sheet_name,
+                    "addr": cell_addr,
+                    "left": left_text,
+                    "right": right_text,
+                })
+
+        left_shapes = {shape.name or str(shape.id): shape for shape in getattr(ws_l, "shapes", [])}
+        right_shapes = {shape.name or str(shape.id): shape for shape in getattr(ws_r, "shapes", [])}
+        for shape_key in sorted(set(left_shapes) | set(right_shapes)):
+            left_shape = left_shapes.get(shape_key)
+            right_shape = right_shapes.get(shape_key)
+            left_text = left_shape.text if left_shape is not None else ""
+            right_text = right_shape.text if right_shape is not None else ""
+            if left_text != right_text:
+                diffs.append({
+                    "sheet": sheet_name,
+                    "shape": shape_key,
+                    "left": left_text,
+                    "right": right_text,
+                })
+
+    return json.dumps(diffs, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
 def get_work_sheet_list(wb_path : str) -> str:
     """
     Get the list of sheets in the workbook.
@@ -1463,12 +1546,140 @@ def get_work_sheet_list(wb_path : str) -> str:
     return '\n'.join(result)
 
 @mcp.tool()
+def export_vba_macros(wb_path : str, out_path : str = "") -> str:
+    """
+    Export VBA macros from an Excel workbook.
+     - wb_path: Workbook file path.
+     - out_path: Output file path or directory. If omitted, write a text file next to the workbook with the same basename and a .vba extension.
+    Return value: The exported file path.
+    """
+    print_log(f'export_vba_macros: wb_path={wb_path}, out_path={out_path}')
+
+    wb_path = os.path.abspath(wb_path)
+    if out_path:
+        out_path = os.path.abspath(out_path)
+        if os.path.isdir(out_path) or out_path.endswith(os.sep) or out_path.endswith('/'):
+            output_path = os.path.join(out_path, f"{Path(wb_path).stem}.vba")
+        else:
+            output_path = out_path if Path(out_path).suffix.lower() else f"{out_path}.vba"
+    else:
+        output_path = str(Path(wb_path).with_suffix('.vba'))
+
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    wb_obj = parse_by_xml(wb_path)
+    content_parts = []
+    for idx, macro in enumerate(wb_obj.vba_macros):
+        module_name = macro.module or f"Module{idx + 1}"
+        lines = macro.lines
+        if isinstance(lines, str):
+            code_text = lines
+        else:
+            code_text = "\n".join(lines or [])
+        if code_text:
+            content_parts.append(f"'{module_name}'\n{code_text}")
+
+    output_file.write_text("\n\n".join(content_parts), encoding="utf-8")
+    return str(output_file)
+    
+
+@mcp.tool()
+def export_image_files(wb_path : str, out_path : str = "", sheet_name : str = "") -> str:
+    """
+    Export embedded images from an Excel workbook.
+     - wb_path: Workbook file path.
+     - out_path: Directory to save image files. If omitted, create a folder named "<wb stem>_img" next to the workbook.
+     - sheet_name: Optional worksheet name to limit export to that sheet. If omitted, export images from all sheets.
+    Return value: A newline-separated list of exported file paths.
+    """
+    print_log(f'export_image_files: wb_path={wb_path}, out_path={out_path}, sheet_name={sheet_name}')
+
+    wb_path = os.path.abspath(wb_path)
+    if out_path:
+        output_dir = os.path.abspath(out_path)
+    else:
+        wb_stem = Path(wb_path).stem
+        output_dir = os.path.abspath(os.path.join(os.path.dirname(wb_path), f"{wb_stem}_img"))
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    wb_obj = parse_by_xml(wb_path)
+    if sheet_name:
+        if sheet_name not in wb_obj.work_sheets:
+            return f"Sheet not found: {sheet_name}"
+        target_sheets = [sheet_name]
+    else:
+        target_sheets = list(wb_obj.work_sheets.keys())
+
+    exported_files = []
+    with zipfile.ZipFile(wb_path) as z:
+        for ws_name in target_sheets:
+            ws_obj = wb_obj.work_sheets[ws_name]
+            sheet_rels_path = get_rels_path(ws_obj.xml_path)
+            if sheet_rels_path not in z.namelist():
+                continue
+
+            sheet_rels = ET.fromstring(z.read(sheet_rels_path))
+            drawing_paths = []
+            for rel in sheet_rels:
+                rel_type = rel.get('Type', '')
+                if 'drawing' not in rel_type:
+                    continue
+                drawing_target = rel.get('Target', '')
+                if drawing_target:
+                    drawing_path = _resolve_zip_part_path(ws_obj.xml_path, drawing_target)
+                    drawing_paths.append(drawing_path)
+
+            image_index = 0
+            for drawing_path in drawing_paths:
+                draw_rels_path = get_rels_path(drawing_path)
+                if draw_rels_path not in z.namelist():
+                    continue
+
+                draw_rels = ET.fromstring(z.read(draw_rels_path))
+                for rel in draw_rels:
+                    rel_type = rel.get('Type', '')
+                    if 'image' not in rel_type:
+                        continue
+
+                    image_target = rel.get('Target', '')
+                    if not image_target:
+                        continue
+
+                    image_part_path = _resolve_zip_part_path(drawing_path, image_target)
+                    if image_part_path not in z.namelist():
+                        continue
+
+                    image_bytes = z.read(image_part_path)
+                    ext = Path(image_part_path).suffix or '.bin'
+                    if not ext.startswith('.'):
+                        ext = f'.{ext}'
+
+                    safe_sheet_name = _sanitize_sheet_name(ws_name)
+                    file_name = f"{safe_sheet_name}_{image_index + 1:04d}{ext}"
+                    save_path = os.path.join(output_dir, file_name)
+                    with open(save_path, 'wb') as fp:
+                        fp.write(image_bytes)
+
+                    exported_files.append(save_path)
+                    image_index += 1
+
+    return '\n'.join(exported_files)
+
+@mcp.tool()
 def get_cell_values(wb_path : str, sheet_name : str, cell_range : str) -> str:
     """
     Get the value of a specific cells with valid value.
      - wb_path: Workbook file path.
      - sheet_name: Worksheet name.
      - cell_range: Cell range in A1 format (e.g., "B2:D5").
+    Return value: A JSON string containing the cell addresses and their corresponding values. For example:
+        {
+            "B2": "Value of B2",
+            "C3": "Value of C3",
+            "D5": "Value of D5"
+        }
     """
     global g_current_wb
 
@@ -1491,8 +1702,8 @@ def get_cell_values(wb_path : str, sheet_name : str, cell_range : str) -> str:
             results[cell_addr] = value
 
     json_value = json.dumps(results, ensure_ascii=False)
-    print_log(f'Cell values (json): {json_value}')
-    return f"Cell range not found: {cell_range}"
+#   print_log(f'Cell values (json): {json_value}')
+    return f"{json_value}"
 
 def main():
     parser = argparse.ArgumentParser(description="")
@@ -1512,6 +1723,12 @@ def main():
 #   print_log(f'get_work_sheet_summary:\n{result}')
 #   result = get_cell_values("sample\\test_macro.xlsm", "オートフィルタ", "B2:G22")
 #   print_log(f'get_cell_values:\n{result}')
+#   result = export_image_files("sample\\test_macro.xlsm", out_path=".tmp_export_test", sheet_name="")
+#   print_log(f'export_image_files:\n{result}')
+#   result = export_vba_macros("sample\\test_macro.xlsm", out_path=".tmp_export_test")
+#   print_log(f'export_vba_macros:\n{result}')
+#   result = get_work_sheets_diff("sample\\test_macro.xlsm", "sample\\test_macro_diff.xlsm")
+#   print_log(f'get_work_sheets_diff:\n{result}')
 
     mcp.run()
 
