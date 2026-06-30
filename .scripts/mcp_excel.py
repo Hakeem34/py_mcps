@@ -5,8 +5,6 @@ import argparse
 import datetime
 import json
 import posixpath
-from unittest import result
-import openpyxl
 from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.utils.cell import coordinate_to_tuple
 
@@ -1089,9 +1087,9 @@ def _get_cell_range(ws_obj : WorkSheetXML):
     有効なセルの範囲をA1形式で返す。セルがない場合はNoneを返す。
     """
     if ws_obj.min_col >= 0 and ws_obj.min_row >= 0 and ws_obj.max_col >= 0 and ws_obj.max_row >= 0:
-        range = get_column_letter(ws_obj.min_col) + str(ws_obj.min_row) + ":" + get_column_letter(ws_obj.max_col) + str(ws_obj.max_row)
+        cell_range = get_column_letter(ws_obj.min_col) + str(ws_obj.min_row) + ":" + get_column_letter(ws_obj.max_col) + str(ws_obj.max_row)
     else:
-        range = None
+        cell_range = None
 
     return range
 
@@ -1517,6 +1515,7 @@ def get_work_sheets_diff(wb_path_left : str, wb_path_right : str) -> str:
             right_shape = right_shapes.get(shape_key)
             left_text = left_shape.text if left_shape is not None else ""
             right_text = right_shape.text if right_shape is not None else ""
+            print_log(f"Comparing shape '{shape_key}' in sheet '{sheet_name}': left='{left_text}', right='{right_text}'")
             if left_text != right_text:
                 diffs.append({
                     "sheet": sheet_name,
