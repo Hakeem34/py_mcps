@@ -9,7 +9,6 @@ from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.utils.cell import coordinate_to_tuple
 
 import zipfile
-import re
 from lxml import etree as ET
 from oletools.olevba import VBA_Parser
 
@@ -204,6 +203,8 @@ class ShapeInfo:
     off_y    : int = 0
     width    : int = 0
     height   : int = 0
+    prst     : str = ""
+    adjusts  : dict = dataclasses.field(default_factory=dict)
     children : list = dataclasses.field(default_factory=list)
 
 @dataclasses.dataclass(slots=True)
@@ -228,20 +229,57 @@ class VBA_macro:
 
 g_current_wb      = None
 g_log_file        = None
+g_json_indent     = 0
 
 # FastMCPのインスタンスを作成
 mcp = FastMCP()
 
-def print_log(text, file=sys.stderr):
-    print(text, file=sys.stderr)
+def print_log(text, file=sys.stderr, indent=0):
+    indent_str = ' ' * (indent * 2)
+    print(indent_str + text, file=sys.stderr)
     if g_log_file:
-        print(text, file=g_log_file)
+        print(indent_str + text, file=g_log_file)
         g_log_file.flush()
 
 def print_shape_info(shape, indent):
-#   print_log(f'{' '*indent*2}[{shape.id}][{shape.name}][{shape.type}] Addr:({shape.col}, {shape.row}) offset:({shape.off_x}, {shape.off_y}) size:({shape.width}, {shape.height})')
-#   for child in shape.children:
-#       print_shape_info(child, indent + 1)
+    if shape.type == "grpsp":
+        print_log(f'Group Shape ID:{shape.id}, Addr:({shape.col}, {shape.row}) offset:({shape.off_x}, {shape.off_y}) size:({shape.width}, {shape.height}), text:{shape.text}', indent=indent)
+        for child in shape.children:
+            print_shape_info(child, indent + 1)
+    else:
+        print_log(f'Shape ID:{shape.id}, [{shape.prst}] Addr:({shape.col}, {shape.row}) offset:({shape.off_x}, {shape.off_y}) size:({shape.width}, {shape.height}), text:{shape.text}', indent=indent)
+    return
+
+def print_worksheet_info(ws_obj : WorkSheetXML):
+    print_log(f'------------------------------------------- WorkSheet Info : {ws_obj.name} -------------------------------------------', indent=1)
+    print_log(f'xml_path={ws_obj.xml_path} hidden={ws_obj.hidden} max_row={ws_obj.max_row} max_col={ws_obj.max_col} cell_count={ws_obj.cell_count}', indent=2)
+    if ws_obj.filter:
+        print_log(f'AutoFilter: {ws_obj.filter.ref} filters={ws_obj.filter.filters}', indent=2)
+    if ws_obj.tables:
+        for table in ws_obj.tables:
+            print_log(f'Table: id={table.id} name={table.name} ref={table.ref} columns={len(table.columns)} filter={table.filter}', indent=2)
+    if ws_obj.shapes:
+        for shape in ws_obj.shapes:
+            print_shape_info(shape, indent=2)
+    if ws_obj.comments:
+        for comment in ws_obj.comments:
+            print_log(f'Comment: new_comment={comment.new_comment} xml_path={comment.xml_path} comments={len(comment.comments)}', indent=2)
+    if ws_obj.hyper_links:
+        for hl in ws_obj.hyper_links:
+            print_log(f'HyperLink: ref={hl.ref} location={hl.location} display={hl.display} rid={hl.rid}', indent=2)
+    return
+
+def print_workbook_info(wb_obj : WorkBookXML):
+    print_log(f'\n------------------------------------------- WorkBook Info : {wb_obj.wb_path} -------------------------------------------')
+    print_log(f'WorkSheets: {len(wb_obj.work_sheets)}', indent=1)
+    for ws_name, ws_obj in wb_obj.work_sheets.items():
+        print_worksheet_info(ws_obj)
+
+    print_log(f'SharedStrings: {len(wb_obj.shared_strings)}', indent=1)
+    print_log(f'Persons: {len(wb_obj.person_info)}', indent=1)
+    print_log(f'Names: {len(wb_obj.names)}', indent=1)
+    print_log(f'Styles: numFmts={len(wb_obj.styles_info.numFmts)} cellStyles={len(wb_obj.styles_info.cellStyles)} cellXfs={len(wb_obj.styles_info.cellXfs)} fonts={len(wb_obj.styles_info.fonts)} borders={len(wb_obj.styles_info.borders)} fills={len(wb_obj.styles_info.fills)} dxfs={len(wb_obj.styles_info.dxfs)}', indent=1)
+    print_log(f'VBA Macros: {len(wb_obj.vba_macros)}', indent=1)
     return
 
 def get_app_path():
@@ -337,33 +375,46 @@ def parse_shape(sp):
     shape = ShapeInfo()
 
     cNvPr = sp.find('./xdr:nvSpPr/xdr:cNvPr', namespaces=NS)
-    if cNvPr is not None:
-        shape.id = cNvPr.get('id')
-        shape.name = cNvPr.get('name') or ''
-        shape.descr = cNvPr.get('descr') or ''
-
-        # 幾何学情報、サイズ
-        shape.geometry = sp.xpath(".//a:prstGeom/@prst", namespaces=NS)
-        pos = sp.xpath(".//a:xfrm/a:off", namespaces=NS)
-        if pos:
-            x = int(pos[0].attrib["x"])
-            y = int(pos[0].attrib["y"])
-            shape.off_x = int(x / EMU_PER_MM)
-            shape.off_y = int(y / EMU_PER_MM)
-
-        size = sp.xpath(".//a:xfrm/a:ext", namespaces=NS)
-        if size:
-            cx = int(size[0].attrib["cx"])
-            cy = int(size[0].attrib["cy"])
-            shape.width  = int(cx / EMU_PER_MM)
-            shape.height = int(cy / EMU_PER_MM)
-    else:
+    if cNvPr is None:
         cNvPr = sp.find('./xdr:nvCxnSpPr/xdr:cNvPr', namespaces=NS)
-        if cNvPr is not None:
-            shape.id = cNvPr.get('id')
-            shape.name = cNvPr.get('name') or ''
-            shape.type = "cxnsp"
-#           print_log(f'[{shape.id}][{shape.name}]:コネクタ')
+        if cNvPr is None:
+            print_log(f'[{shape.id}][{shape.name}]:cNvPr not found')
+            return shape
+        shape.type = "cxnsp"
+
+    shape.id = cNvPr.get('id')
+    shape.name = cNvPr.get('name') or ''
+    shape.descr = cNvPr.get('descr') or ''
+
+    # 幾何学情報、サイズ
+    shape.geometry = sp.xpath(".//a:prstGeom/@prst", namespaces=NS)
+    pos = sp.xpath(".//a:xfrm/a:off", namespaces=NS)
+    if pos:
+        x = int(pos[0].attrib["x"])
+        y = int(pos[0].attrib["y"])
+        shape.off_x = int(x / EMU_PER_MM)
+        shape.off_y = int(y / EMU_PER_MM)
+
+    size = sp.xpath(".//a:xfrm/a:ext", namespaces=NS)
+    if size:
+        cx = int(size[0].attrib["cx"])
+        cy = int(size[0].attrib["cy"])
+        shape.width  = int(cx / EMU_PER_MM)
+        shape.height = int(cy / EMU_PER_MM)
+
+    spPr = sp.find('./xdr:spPr', namespaces=NS)
+    if spPr is not None:
+#       print_log(f'[{shape.id}][{shape.name}]:spPr={ET.tostring(spPr, encoding="unicode")}')
+        prstGeom = sp.find(".//a:prstGeom", namespaces=NS)
+        if prstGeom is not None and prstGeom.get('prst') is not None:
+#           print_log(f'[{shape.id}][{shape.name}]:prstGeom={ET.tostring(prstGeom, encoding="unicode")}')
+            shape.prst = prstGeom.get('prst')
+            for g in prstGeom.xpath('./a:avLst/a:gd', namespaces=NS):
+                name = g.get('name')
+                fmla = g.get('fmla')
+                shape.adjusts[name] = fmla
+
+#           print_log(f'[{shape.id}][{shape.name}]:adjusts={shape.adjusts}')
 
     shape.text = get_shape_text(sp, NS)
     return shape
@@ -496,47 +547,56 @@ def parse_table_xml(z : zipfile.ZipFile, table_xml_path : str, ws_obj : WorkShee
     ws_obj.tables.append(table_info)
 
 
+def parse_two_cell_anchor(z : zipfile.ZipFile, anchor, ws_obj : WorkSheetXML):
+    """
+    twoCellAnchorの解析
+    """
+#   print_log(f'parse_anchor():{anchor}')
+    for sp in anchor.xpath('./xdr:sp', namespaces=NS):
+#       print_log(f"xdr:sp1")
+        shape = parse_shape(sp)
+
+        # セル座標
+        shape.col  = int(anchor.xpath(".//xdr:from/xdr:col/text()", namespaces=NS)[0]) + 1
+        shape.row  = int(anchor.xpath(".//xdr:from/xdr:row/text()", namespaces=NS)[0]) + 1
+
+#       print_log(f'[{shape.id}][{shape.name}] Addr:({shape.col}, {shape.row})')
+#       print_shape_info(shape, 0)
+        ws_obj.shapes.append(shape)
+
+    for cnxsp in anchor.xpath('./xdr:cxnSp', namespaces=NS):
+        shape = parse_shape(cnxsp)
+
+        # セル座標
+        shape.col  = int(anchor.xpath(".//xdr:from/xdr:col/text()", namespaces=NS)[0]) + 1
+        shape.row  = int(anchor.xpath(".//xdr:from/xdr:row/text()", namespaces=NS)[0]) + 1
+#       print_log(f'[{shape.id}][{shape.name}] Addr:({shape.col}, {shape.row})')
+#       print_shape_info(shape, 0)
+        ws_obj.shapes.append(shape)
+
+    for grp in anchor.xpath('./xdr:grpSp', namespaces=NS):
+#       print_log(f"xdr:grpSp1")
+        shape = parse_group_shape(grp)
+        # セル座標
+        shape.col  = int(anchor.xpath(".//xdr:from/xdr:col/text()", namespaces=NS)[0]) + 1
+        shape.row  = int(anchor.xpath(".//xdr:from/xdr:row/text()", namespaces=NS)[0]) + 1
+#       print_log(f'[{shape.id}][{shape.name}] Addr:({shape.col}, {shape.row})')
+#       print_shape_info(shape, 0)
+        ws_obj.shapes.append(shape)
+
+
 def parse_drawing_xml(z : zipfile.ZipFile, draw_xml_path : str, ws_obj : WorkSheetXML):
     """
     図形描画のxml解析
     """
     xml = ET.fromstring(z.read(draw_xml_path))
-    for anchor in xml.xpath("//xdr:twoCellAnchor | //xdr:oneCellAnchor | //xdr:absoluteAnchor", namespaces=NS):
-#       print_log(f'parse_anchor():{anchor}')
+    for anchor in xml.xpath("//xdr:twoCellAnchor", namespaces=NS):
+        parse_two_cell_anchor(z, anchor, ws_obj)
 
-        # normal shape
-        for sp in anchor.xpath('./xdr:sp', namespaces=NS):
-#           print_log(f"xdr:sp1")
-            shape = parse_shape(sp)
+    for anchor in xml.xpath("//xdr:oneCellAnchor | //xdr:absoluteAnchor", namespaces=NS):
+        print_log(f'no handler for anchor type: {anchor.tag}')
 
-            # セル座標
-            shape.col  = int(anchor.xpath(".//xdr:from/xdr:col/text()", namespaces=NS)[0]) + 1
-            shape.row  = int(anchor.xpath(".//xdr:from/xdr:row/text()", namespaces=NS)[0]) + 1
-#           print_log(f'[{shape.id}][{shape.name}] Addr:({shape.col}, {shape.row})')
-            print_shape_info(shape, 0)
-            ws_obj.shapes.append(shape)
-
-        for cnxsp in anchor.xpath('./xdr:cxnSp', namespaces=NS):
-            shape = parse_shape(cnxsp)
-
-            # セル座標
-            shape.col  = int(anchor.xpath(".//xdr:from/xdr:col/text()", namespaces=NS)[0]) + 1
-            shape.row  = int(anchor.xpath(".//xdr:from/xdr:row/text()", namespaces=NS)[0]) + 1
-#           print_log(f'[{shape.id}][{shape.name}] Addr:({shape.col}, {shape.row})')
-            print_shape_info(shape, 0)
-            ws_obj.shapes.append(shape)
-
-
-        for grp in anchor.xpath('./xdr:grpSp', namespaces=NS):
-#           print_log(f"xdr:grpSp1")
-            shape = parse_group_shape(grp)
-            # セル座標
-            shape.col  = int(anchor.xpath(".//xdr:from/xdr:col/text()", namespaces=NS)[0]) + 1
-            shape.row  = int(anchor.xpath(".//xdr:from/xdr:row/text()", namespaces=NS)[0]) + 1
-#           print_log(f'[{shape.id}][{shape.name}] Addr:({shape.col}, {shape.row})')
-            print_shape_info(shape, 0)
-            ws_obj.shapes.append(shape)
- 
+    # drawing.xmlに紐づくchart/imageの解析
     rel_path = get_rels_path(draw_xml_path)
     if rel_path in z.namelist():
 #       print_log(f'[rels] {draw_xml_path} -> {rel_path}')
@@ -612,166 +672,175 @@ def parse_cell(ws_obj : WorkSheetXML, cell_elem):
     cell.style_Id = cell_style
     ws_obj.cells[cell_addr] = cell
 
-def parse_work_sheet(z : zipfile.ZipFile, wb_obj : WorkBookXML):
+def parse_work_sheets(z : zipfile.ZipFile, wb_obj : WorkBookXML, ignore_list : list):
     """
     ワークシートのXML解析
     """
     for ws_name, ws_obj in wb_obj.work_sheets.items():
-        if (ws_obj.hidden):
-            print_log(f'------------------------------------------- parse_work_sheet : [Hidden]{ws_name} ({ws_obj.xml_path})-------------------------------------------')
+        if ws_name in ignore_list:
+            print_log(f'------------------------------------------- parse_work_sheet : [Ignore]{ws_name} ({ws_obj.xml_path})-------------------------------------------')
+            continue
+        parse_work_sheet(z, wb_obj, ws_obj)
+
+def parse_work_sheet(z : zipfile.ZipFile, wb_obj : WrokBookXML, ws_obj : WorkSheetXML):
+    """
+    ワークシートのXML解析
+    """
+    if (ws_obj.hidden):
+        print_log(f'------------------------------------------- parse_work_sheet : [Hidden]{ws_obj.name} ({ws_obj.xml_path})-------------------------------------------')
+    else:
+        print_log(f'------------------------------------------- parse_work_sheet : {ws_obj.name} ({ws_obj.xml_path})-------------------------------------------')
+
+    # シートのxmlを確認する
+    ws_xml = ET.fromstring(z.read(ws_obj.xml_path))
+
+    merge_cells = ws_xml.find('./main:mergeCells', namespaces=NS)
+    if merge_cells is not None:
+#       print_log(f'  merge_cells : {merge_cells}')
+        for mc in merge_cells.findall('./main:mergeCell', namespaces=NS):
+#           print(mc.get('ref'))
+            ws_obj.merge_cells.append(mc.get('ref'))
+
+    # sheetFormatPrのチェック
+    sheet_format_pr = ws_xml.find('./main:sheetFormatPr', namespaces=NS)
+    if sheet_format_pr is not None:
+        ws_obj.default_col_width = sheet_format_pr.get('defaultColWidth')
+        ws_obj.default_row_height = sheet_format_pr.get('defaultRowHeight')
+        ws_obj.outlineLevelRow = int(sheet_format_pr.get('outlineLevelRow', '0'))
+        ws_obj.outlineLevelCol = int(sheet_format_pr.get('outlineLevelCol', '0'))
+#       print_log(f'  defaultColWidth: {ws_obj.default_col_width} defaultRowHeight: {ws_obj.default_row_height}, outlineLevelRow: {ws_obj.outlineLevelRow} outlineLevelCol: {ws_obj.outlineLevelCol}')
+
+    # 枠線表示の設定
+    for sv in ws_xml.xpath('//main:sheetView', namespaces=NS):
+        if sv.get('showGridLines') == '0':
+            ws_obj.show_grid_lines = False
         else:
-            print_log(f'------------------------------------------- parse_work_sheet : {ws_name} ({ws_obj.xml_path})-------------------------------------------')
+            ws_obj.show_grid_lines = True
+#       print_log(f'  showGridLines: {ws_obj.show_grid_lines}')
 
-        # シートのxmlを確認する
-        ws_xml = ET.fromstring(z.read(ws_obj.xml_path))
+    # dimensionのチェック
+    for dim in ws_xml.xpath('//main:dimension', namespaces=NS):
+        ref = dim.get('ref')
+#       print_log(f'  dimension: {ref}')
+        ws_obj.dimension = ref
 
-        merge_cells = ws_xml.find('./main:mergeCells', namespaces=NS)
-        if merge_cells is not None:
-#           print_log(f'  merge_cells : {merge_cells}')
-            for mc in merge_cells.findall('./main:mergeCell', namespaces=NS):
-#               print(mc.get('ref'))
-                ws_obj.merge_cells.append(mc.get('ref'))
+    # ヘッダ / フッタのチェック
+    header_footer = ws_xml.find('./main:headerFooter', namespaces=NS)
+    if header_footer is not None:
+        for tag in HEADER_FOOTER_TAGS:
+            elem = header_footer.find(f'./main:{tag}', namespaces=NS)
+            if elem is not None and elem.text:
+#               print_log(f'  {tag}: {elem.text}')
+                ws_obj.header_footer[tag] = elem.text
 
-        # sheetFormatPrのチェック
-        sheet_format_pr = ws_xml.find('./main:sheetFormatPr', namespaces=NS)
-        if sheet_format_pr is not None:
-            ws_obj.default_col_width = sheet_format_pr.get('defaultColWidth')
-            ws_obj.default_row_height = sheet_format_pr.get('defaultRowHeight')
-            ws_obj.outlineLevelRow = int(sheet_format_pr.get('outlineLevelRow', '0'))
-            ws_obj.outlineLevelCol = int(sheet_format_pr.get('outlineLevelCol', '0'))
-#           print_log(f'  defaultColWidth: {ws_obj.default_col_width} defaultRowHeight: {ws_obj.default_row_height}, outlineLevelRow: {ws_obj.outlineLevelRow} outlineLevelCol: {ws_obj.outlineLevelCol}')
+    # セルのチェック
+    for c in ws_xml.xpath('//main:c', namespaces=NS):
+        parse_cell(ws_obj, c)
 
-        # 枠線表示の設定
-        for sv in ws_xml.xpath('//main:sheetView', namespaces=NS):
-            if sv.get('showGridLines') == '0':
-                ws_obj.show_grid_lines = False
-            else:
-                ws_obj.show_grid_lines = True
-#           print_log(f'  showGridLines: {ws_obj.show_grid_lines}')
+    # セルのアドレスから、シートの最大行/列と有効な値を持つセル数をカウントする
+    for cell_addr, cell in ws_obj.cells.items():
+        col_str = re.sub(r'\d', '', cell_addr)
+        row_str = re.sub(r'\D', '', cell_addr)
+        col = column_index_from_string(col_str)
+        row = int(row_str)
+        if ws_obj.max_row == -1 or row > ws_obj.max_row:
+            ws_obj.max_row = row
+        if ws_obj.min_row == -1 or row < ws_obj.min_row:
+            ws_obj.min_row = row
+        if ws_obj.max_col == -1 or col > ws_obj.max_col:
+            ws_obj.max_col = col
+        if ws_obj.min_col == -1 or col < ws_obj.min_col:
+            ws_obj.min_col = col
 
-        # dimensionのチェック
-        for dim in ws_xml.xpath('//main:dimension', namespaces=NS):
-            ref = dim.get('ref')
-#           print_log(f'  dimension: {ref}')
-            ws_obj.dimension = ref
+        if cell.value is not None:
+            ws_obj.cell_count += 1
 
-        # ヘッダ / フッタのチェック
-        header_footer = ws_xml.find('./main:headerFooter', namespaces=NS)
-        if header_footer is not None:
-            for tag in HEADER_FOOTER_TAGS:
-                elem = header_footer.find(f'./main:{tag}', namespaces=NS)
-                if elem is not None and elem.text:
-#                   print_log(f'  {tag}: {elem.text}')
-                    ws_obj.header_footer[tag] = elem.text
-
-        # セルのチェック
-        for c in ws_xml.xpath('//main:c', namespaces=NS):
-            parse_cell(ws_obj, c)
-
-        # セルのアドレスから、シートの最大行/列と有効な値を持つセル数をカウントする
-        for cell_addr, cell in ws_obj.cells.items():
-            col_str = re.sub(r'\d', '', cell_addr)
-            row_str = re.sub(r'\D', '', cell_addr)
-            col = column_index_from_string(col_str)
-            row = int(row_str)
-            if ws_obj.max_row == -1 or row > ws_obj.max_row:
-                ws_obj.max_row = row
-            if ws_obj.min_row == -1 or row < ws_obj.min_row:
-                ws_obj.min_row = row
-            if ws_obj.max_col == -1 or col > ws_obj.max_col:
-                ws_obj.max_col = col
-            if ws_obj.min_col == -1 or col < ws_obj.min_col:
-                ws_obj.min_col = col
-
-            if cell.value is not None:
-                ws_obj.cell_count += 1
-
-        #シートに紐づくdrawings / commentsをチェックする
-        rel_path = get_rels_path(ws_obj.xml_path)
-#       print_log(f"check for {rel_path} from {ws_obj.xml_path}")
-        if rel_path in z.namelist():
-            rel_xml = ET.fromstring(z.read(rel_path))
-            for rel in rel_xml:
-                ws_obj.rels[rel.attrib["Id"]] = rel.attrib["Target"]
-                if "drawing" in rel.attrib["Type"]:
-                    draw_xml_path = "xl/drawings/" + rel.attrib["Target"].split("/")[-1]
-#                   print_log(rel.attrib["Target"])
-#                   print_log(f'[rels] {ws_name} -> {draw_xml_path}', file=sys.stderr)
-                    parse_drawing_xml(z, draw_xml_path, ws_obj)
-                elif "threadedComment" in rel.attrib["Type"]:
-#                   print_log(rel.attrib["Target"])
-                    comment_obj = CommentXML(new_comment=True)
-                    comment_obj.xml_path = "xl/threadedComments/" + rel.attrib["Target"].split("/")[-1]
-                    parse_comments(z, wb_obj, comment_obj)
-                    ws_obj.comments.append(comment_obj)
-                elif "comment" in rel.attrib["Type"]:
-#                   print_log(rel.attrib["Target"])
-                    comment_obj = CommentXML(new_comment=False)
-                    comment_obj.xml_path = "xl/" + rel.attrib["Target"].split("/")[-1]
-                    parse_comments(z, wb_obj, comment_obj)
-                    ws_obj.comments.append(comment_obj)
-                elif "table" in rel.attrib["Type"]:
-                    table_xml_path = "xl/tables/" + rel.attrib["Target"].split("/")[-1]
-                    parse_table_xml(z, table_xml_path, ws_obj)
-                    pass
-#               else:
-#                   print_log(f'Other Rel[{rel.attrib["Id"]}][{rel.attrib["Type"]}] : {rel.attrib["Target"]}')
-
-        # ハイパーリンクのチェック
-        for hl in ws_xml.xpath('//main:hyperlink', namespaces=NS):
-            hl_info = HyperLinkInfo()
-            hl_info.ref = hl.get('ref')
-            hl_info.display = hl.get('display')
-            hl_info.location = hl.get('location')
-            hl_info.rid = hl.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
-#           if hl_info.display is not None:
-#               print_log(f'HyperLink[{hl_info.ref}]:{hl_info.display}')
+    #シートに紐づくdrawings / commentsをチェックする
+    rel_path = get_rels_path(ws_obj.xml_path)
+#   print_log(f"check for {rel_path} from {ws_obj.xml_path}")
+    if rel_path in z.namelist():
+        rel_xml = ET.fromstring(z.read(rel_path))
+        for rel in rel_xml:
+            ws_obj.rels[rel.attrib["Id"]] = rel.attrib["Target"]
+            if "drawing" in rel.attrib["Type"]:
+                draw_xml_path = "xl/drawings/" + rel.attrib["Target"].split("/")[-1]
+#               print_log(rel.attrib["Target"])
+#               print_log(f'[rels] {ws_name} -> {draw_xml_path}', file=sys.stderr)
+                parse_drawing_xml(z, draw_xml_path, ws_obj)
+            elif "threadedComment" in rel.attrib["Type"]:
+#               print_log(rel.attrib["Target"])
+                comment_obj = CommentXML(new_comment=True)
+                comment_obj.xml_path = "xl/threadedComments/" + rel.attrib["Target"].split("/")[-1]
+                parse_comments(z, wb_obj, comment_obj)
+                ws_obj.comments.append(comment_obj)
+            elif "comment" in rel.attrib["Type"]:
+#               print_log(rel.attrib["Target"])
+                comment_obj = CommentXML(new_comment=False)
+                comment_obj.xml_path = "xl/" + rel.attrib["Target"].split("/")[-1]
+                parse_comments(z, wb_obj, comment_obj)
+                ws_obj.comments.append(comment_obj)
+            elif "table" in rel.attrib["Type"]:
+                table_xml_path = "xl/tables/" + rel.attrib["Target"].split("/")[-1]
+                parse_table_xml(z, table_xml_path, ws_obj)
+                pass
 #           else:
-#               print_log(f'HyperLink[{hl_info.ref}]:{hl_info.rid} -> {ws_obj.rels[hl_info.rid]}')
+#               print_log(f'Other Rel[{rel.attrib["Id"]}][{rel.attrib["Type"]}] : {rel.attrib["Target"]}')
 
-            ws_obj.hyper_links.append(hl_info)
-        
-        # オートフィルタの情報取得
-        af = ws_xml.find('{*}autoFilter')
-        if af is not None:
-            af_info = FilterInfo()
-            af_info.ref = af.get('ref')
-#           print_log(f'AUTOFILTER RANGE: {af_info.ref}')
-            for fc in af.findall('{*}filterColumn'):
-                col_id = fc.get('colId')
-#               print_log(f'  COLUMN: {col_id}')
-                af_info.filters[col_id] = []
+    # ハイパーリンクのチェック
+    for hl in ws_xml.xpath('//main:hyperlink', namespaces=NS):
+        hl_info = HyperLinkInfo()
+        hl_info.ref = hl.get('ref')
+        hl_info.display = hl.get('display')
+        hl_info.location = hl.get('location')
+        hl_info.rid = hl.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
+#       if hl_info.display is not None:
+#           print_log(f'HyperLink[{hl_info.ref}]:{hl_info.display}')
+#       else:
+#           print_log(f'HyperLink[{hl_info.ref}]:{hl_info.rid} -> {ws_obj.rels[hl_info.rid]}')
 
-                # とりあえず値の選択フィルタのみParseする。他にもカラーフィルタやカスタムフィルタとかあるけど、今は無視
-                for f in fc.findall('.//{*}filter'):
-                    val = f.get('val')
-#                   print_log(f'    FILTER: {val}')
-                    af_info.filters[col_id].append(val)
-            ws_obj.filter = af_info
+        ws_obj.hyper_links.append(hl_info)
+    
+    # オートフィルタの情報取得
+    af = ws_xml.find('{*}autoFilter')
+    if af is not None:
+        af_info = FilterInfo()
+        af_info.ref = af.get('ref')
+#       print_log(f'AUTOFILTER RANGE: {af_info.ref}')
+        for fc in af.findall('{*}filterColumn'):
+            col_id = fc.get('colId')
+#           print_log(f'  COLUMN: {col_id}')
+            af_info.filters[col_id] = []
 
-        # page setup / print settings
-        page_setup_elem = ws_xml.find('{*}pageSetup')
-        if page_setup_elem is not None:
-            for key in ('scale', 'fitToPage', 'fitToWidth', 'fitToHeight', 'orientation', 'paperSize'):
-                value = page_setup_elem.get(key)
-                if value is not None:
-                    ws_obj.page_setup[key] = value
+            # とりあえず値の選択フィルタのみParseする。他にもカラーフィルタやカスタムフィルタとかあるけど、今は無視
+            for f in fc.findall('.//{*}filter'):
+                val = f.get('val')
+#               print_log(f'    FILTER: {val}')
+                af_info.filters[col_id].append(val)
+        ws_obj.filter = af_info
 
-        for brk in ws_xml.findall('.//{*}rowBreaks/{*}brk'):
-            row_id = brk.get('id')
-            if row_id is not None:
-                try:
-                    ws_obj.row_breaks.append(int(row_id))
-                except Exception:
-                    pass
+    # page setup / print settings
+    page_setup_elem = ws_xml.find('{*}pageSetup')
+    if page_setup_elem is not None:
+        for key in ('scale', 'fitToPage', 'fitToWidth', 'fitToHeight', 'orientation', 'paperSize'):
+            value = page_setup_elem.get(key)
+            if value is not None:
+                ws_obj.page_setup[key] = value
 
-        for brk in ws_xml.findall('.//{*}colBreaks/{*}brk'):
-            col_id = brk.get('id')
-            if col_id is not None:
-                try:
-                    ws_obj.col_breaks.append(int(col_id))
-                except Exception:
-                    pass
+    for brk in ws_xml.findall('.//{*}rowBreaks/{*}brk'):
+        row_id = brk.get('id')
+        if row_id is not None:
+            try:
+                ws_obj.row_breaks.append(int(row_id))
+            except Exception:
+                pass
+
+    for brk in ws_xml.findall('.//{*}colBreaks/{*}brk'):
+        col_id = brk.get('id')
+        if col_id is not None:
+            try:
+                ws_obj.col_breaks.append(int(col_id))
+            except Exception:
+                pass
     return
 
 
@@ -1018,7 +1087,7 @@ def parse_work_book(wb_path : str, z : zipfile.ZipFile):
 
     parse_shared_string(z, wb_obj)
     parse_styles(z, wb_obj)
-    parse_work_sheet(z, wb_obj)
+    parse_work_sheets(z, wb_obj, [])
     return wb_obj
 
 def parse_by_xml(wb_path):
@@ -1028,6 +1097,8 @@ def parse_by_xml(wb_path):
     with zipfile.ZipFile(wb_path) as z:
         wb_obj            = parse_work_book(wb_path, z)
         wb_obj.vba_macros = parse_vba(wb_path)
+    
+    print_workbook_info(wb_obj)
     return wb_obj
 
 
@@ -1151,7 +1222,7 @@ def _range_to_addr_list(range_addr: str) -> list:
 #           addr_list.append(f"{get_column_letter(col)}{row}")
             addr_list.append(_cell_address(col, row))
 
-    return addr_list
+    return addr_list, min_row, min_col, max_row, max_col
 
 
 def _matches(pattern, text : str) -> bool:
@@ -1666,23 +1737,48 @@ def export_image_files(wb_path : str, out_path : str = "", sheet_name : str = ""
 
     return '\n'.join(exported_files)
 
+def _get_cell_values_by_row(wb_obj : WorkBookXML, sheet_name : str, row : int, start_col : str = None, end_col : str = None) -> dict:
+    if sheet_name not in wb_obj.work_sheets:
+        return {}
+    
+    ws_obj = wb_obj.work_sheets[sheet_name]
+    results = {}
+    for addr, cell in ws_obj.cells.items():
+        col = column_index_from_string(re.sub(r'\d+$', '', addr))
+        row_num = int(re.sub(r'^[A-Z]+', '', addr))
+        if row_num != row:
+            continue
+
+        if start_col and col < column_index_from_string(start_col):
+            continue
+        if end_col and col > column_index_from_string(end_col):
+            continue
+
+        value = _cell_display_text(cell, wb_obj)
+        if value is not None and value != "":
+            results[get_column_letter(col)] = value
+
+    return results
+
 @mcp.tool()
-def get_cell_values(wb_path : str, sheet_name : str, cell_range : str) -> str:
+def get_cell_values_by_row(wb_path : str, sheet_name : str, row : int, start_col : str = None, end_col : str = None) -> str:
     """
-    Get the value of a specific cells with valid value.
+    Get the value of cells in a specific row with valid value.
      - wb_path: Workbook file path.
      - sheet_name: Worksheet name.
-     - cell_range: Cell range in A1 format (e.g., "B2:D5").
+     - row: Row number.
+     - start_col: Starting column letter.
+     - end_col: Ending column letter.
     Return value: A JSON string containing the cell addresses and their corresponding values. For example:
         {
-            "B2": "Value of B2",
-            "C3": "Value of C3",
-            "D5": "Value of D5"
+            "B": "Value of B2",
+            "C": "Value of C2",
+            "D": "Value of D2"
         }
     """
     global g_current_wb
 
-    print_log(f'get_cell_values: wb_path={wb_path}, sheet_name={sheet_name}, cell_range={cell_range}')
+    print_log(f'get_cell_values_by_row: wb_path={wb_path}, sheet_name={sheet_name}, row={row}')
     if g_current_wb is None or g_current_wb.wb_path != wb_path:
         g_current_wb = parse_by_xml(wb_path)
 
@@ -1690,21 +1786,94 @@ def get_cell_values(wb_path : str, sheet_name : str, cell_range : str) -> str:
     if sheet_name not in wb_obj.work_sheets:
         return f"Sheet not found: {sheet_name}"
     
-    addrs = _range_to_addr_list(cell_range)  # これでセル範囲の形式が正しいかどうかもチェック
-    ws_obj = wb_obj.work_sheets[sheet_name]
-    results = {}
-    for cell_addr in addrs:
-        cell = ws_obj.cells.get(cell_addr)
-        if cell and cell.value is not None:
-            value = _cell_display_text(cell, wb_obj)
-#           print_log(f'{cell_addr}: {value}')
-            results[cell_addr] = value
+    results = _get_cell_values_by_row(wb_obj, sheet_name, row, start_col, end_col)
+    json_value = json.dumps(results, ensure_ascii=False, indent=g_json_indent)
+    return f"{json_value}"
 
-    json_value = json.dumps(results, ensure_ascii=False)
+
+@mcp.tool()
+def get_cell_values_by_address(wb_path : str, sheet_name : str, cell_range : str) -> str:
+    """
+    Get the value of a specific cells with valid value.
+     - wb_path: Workbook file path.
+     - sheet_name: Worksheet name.
+     - cell_range: Cell range in A1 format (e.g., "B2:D5").
+    Return value: A JSON string containing the cell addresses and their corresponding values. For example:
+        {
+            "rows": {2: {"B": "Value of B2", "C": "Value of C2", "D": "Value of D2"},
+                     3: {"B": "Value of B3", "C": "Value of C3", "D": "Value of D3"}
+                     ...},
+        }
+    """
+    global g_current_wb
+
+    print_log(f'get_cell_values_by_address: wb_path={wb_path}, sheet_name={sheet_name}, cell_range={cell_range}')
+    if g_current_wb is None or g_current_wb.wb_path != wb_path:
+        g_current_wb = parse_by_xml(wb_path)
+
+    wb_obj = g_current_wb
+    if sheet_name not in wb_obj.work_sheets:
+        return f"Sheet not found: {sheet_name}"
+    
+    addrs, min_row, min_col, max_row, max_col = _range_to_addr_list(cell_range)  # これでセル範囲の形式が正しいかどうかもチェック
+    ws_obj = wb_obj.work_sheets[sheet_name]
+    results = {"rows": {}}
+    for row in range(min_row, max_row + 1):
+        row_values = _get_cell_values_by_row(wb_obj, sheet_name, row, get_column_letter(min_col), get_column_letter(max_col))
+        if row_values:
+            results["rows"][row] = row_values
+
+    json_value = json.dumps(results, ensure_ascii=False, indent=g_json_indent)
 #   print_log(f'Cell values (json): {json_value}')
     return f"{json_value}"
 
+@mcp.tool()
+def get_shape_infos(wb_path : str, sheet_name : str = None) -> str:
+    """
+    Get information about shapes in the workbook or a specific worksheet.
+     - wb_path: Workbook file path.
+     - sheet_name: Optional worksheet name. If omitted, information for all sheets is returned.
+    Return value: A JSON string containing shape information. For example:
+        {
+            "Sheet1": [
+                {"name": "Shape1", "type": "rect", "text": "Hello"},
+                {"name": "Shape2", "type": "circle", "text": ""}
+            ],
+            "Sheet2": [
+                {"name": "Shape3", "type": "line", "text": ""}
+            ]
+        }
+    """
+    global g_current_wb
+
+    print_log(f'get_shape_infos: wb_path={wb_path}, sheet_name={sheet_name}')
+    if g_current_wb is None or g_current_wb.wb_path != wb_path:
+        g_current_wb = parse_by_xml(wb_path)
+
+    wb_obj = g_current_wb
+    shape_infos = {}
+    target_sheets = [sheet_name] if sheet_name else list(wb_obj.work_sheets.keys())
+
+    for ws_name in target_sheets:
+        if ws_name not in wb_obj.work_sheets:
+            continue
+        ws_obj = wb_obj.work_sheets[ws_name]
+        shapes_list = []
+        for shape in ws_obj.shapes:
+            shapes_list.append({
+                "name": shape.name,
+                "type": shape.type,
+                "text": shape.text,
+                "descr": shape.descr
+            })
+        shape_infos[ws_name] = shapes_list
+
+    json_value = json.dumps(shape_infos, ensure_ascii=False, indent=g_json_indent)
+    return f"{json_value}"
+
+
 def main():
+    global g_json_indent
     parser = argparse.ArgumentParser(description="")
     parser.add_argument("-v", "--verbose", action='store_true')
     args = parser.parse_args()
@@ -1720,14 +1889,23 @@ def main():
 #   print_log(f'grep_work_books:\n{result}')
 #   result = get_work_sheet_summary("sample\\test_macro.xlsm", sheet_name=None)
 #   print_log(f'get_work_sheet_summary:\n{result}')
-#   result = get_cell_values("sample\\test_macro.xlsm", "オートフィルタ", "B2:G22")
-#   print_log(f'get_cell_values:\n{result}')
+#   result = get_cell_values_by_row("sample\\test_macro.xlsm", "オートフィルタ", 2, "C", "D")
+#   print_log(f'get_cell_values_by_row:\n{result}')
+#   result = get_cell_values_by_row("sample\\test_macro.xlsm", "目次", "1:50")
+#   print_log(f'get_cell_values_by_row:\n{result}')
+#   result = get_cell_values_by_address("sample\\test_macro.xlsm", "オートフィルタ", "B2:G22")
+#   print_log(f'get_cell_values_by_address:\n{result}')
+#   g_json_indent = 2
+#   result = get_cell_values_by_address("sample\\test_macro.xlsm", "目次", "A1:X100")
+#   print_log(f'get_cell_values_by_address:\n{result}')
 #   result = export_image_files("sample\\test_macro.xlsm", out_path=".tmp_export_test", sheet_name="")
 #   print_log(f'export_image_files:\n{result}')
 #   result = export_vba_macros("sample\\test_macro.xlsm", out_path=".tmp_export_test")
 #   print_log(f'export_vba_macros:\n{result}')
 #   result = get_work_sheets_diff("sample\\test_macro.xlsm", "sample\\test_macro_diff.xlsm")
 #   print_log(f'get_work_sheets_diff:\n{result}')
+#   result = get_shape_infos("sample\\test_macro.xlsm")
+#   print_log(f'get_shape_infos:\n{result}')
 
     mcp.run()
 
