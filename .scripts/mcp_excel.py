@@ -9,6 +9,7 @@ from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.utils.cell import coordinate_to_tuple
 
 import zipfile
+import win32com.client
 from lxml import etree as ET
 from oletools.olevba import VBA_Parser
 
@@ -1162,12 +1163,13 @@ def _get_cell_range(ws_obj : WorkSheetXML):
     else:
         cell_range = None
 
-    return range
+    return cell_range
 
 def _get_first_cell_value(ws_obj : WorkSheetXML, wb_obj : WorkBookXML):
     cell_range = _get_cell_range(ws_obj)
     if not cell_range:
         return ""
+    print_log(f'first cell range: {cell_range}')
     parsed = _parse_range_ref(cell_range)
     if not parsed:
         return ""
@@ -1871,41 +1873,149 @@ def get_shape_infos(wb_path : str, sheet_name : str = None) -> str:
     json_value = json.dumps(shape_infos, ensure_ascii=False, indent=g_json_indent)
     return f"{json_value}"
 
+@mcp.tool()
+def render_range_to_png(wb_path : str, sheet_name : str, cell_range : str, out_path : str = "") -> str:
+    """
+    Render a worksheet range to a PNG image file using Excel's COM interface.
+     - wb_path: Workbook file path.
+     - sheet_name: Worksheet name.
+     - cell_range: Cell range in A1 format (e.g. "B2:D10").
+     - out_path: Optional output PNG file path. If omitted, create a file next to the workbook.
+    Return value: The generated PNG file path.
+    """
+    wb_path = os.path.abspath(wb_path)
+    if not os.path.exists(wb_path):
+        return f"Workbook not found: {wb_path}"
+
+    if not out_path:
+        base_name = Path(wb_path).stem
+        safe_sheet = _sanitize_sheet_name(sheet_name)
+        safe_range = re.sub(r'[^A-Za-z0-9_.-]+', '_', cell_range.upper())
+        output_path = Path(wb_path).with_suffix('') / f"{base_name}_{safe_sheet}_{safe_range}.png"
+    else:
+        output_path = Path(out_path)
+        if output_path.suffix.lower() != '.png':
+            output_path = output_path.with_suffix('.png')
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path = output_path.resolve()
+
+    excel = None
+    workbook = None
+    chart_object = None
+    try:
+        excel = win32com.client.Dispatch("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        workbook = excel.Workbooks.Open(wb_path, ReadOnly=True, IgnoreReadOnlyRecommended=True, UpdateLinks=0)
+        sheet = workbook.Sheets(sheet_name)
+        if sheet is None:
+            return f"Sheet not found: {sheet_name}"
+
+        sheet.Activate()
+        excel.ActiveWindow.Zoom = 100  # Set zoom to 100% for consistent rendering
+#       window = workbook.Windows(1)
+#       window.Zoom = 100  # Set zoom to 100% for consistent rendering
+
+        sheet_type = getattr(sheet, "Type", None)
+        if sheet_type == 3:
+            sheet.Export(str(output_path), "PNG")
+            workbook.Close(SaveChanges=False)
+            excel.Quit()
+            return str(output_path)
+
+        worksheet = sheet
+#       worksheet.Activate()
+        cell_range_obj = worksheet.Range(cell_range)
+        cell_range_obj.CopyPicture(Appearance=1, Format=2)
+
+        width = max(100, int(round(cell_range_obj.Width + 10)))
+        height = max(100, int(round(cell_range_obj.Height + 10)))
+        chart_object = worksheet.ChartObjects().Add(10, 10, width, height)
+        chart = chart_object.Chart
+        chart.Paste()
+        chart.Export(str(output_path), "PNG")
+        result = str(output_path)
+    except Exception as exc:
+        result = f"Error: {exc}"
+    finally:
+        if chart_object is not None:
+            try:
+                chart_object.Delete()
+            except Exception:
+                pass
+        if workbook is not None:
+            try:
+                workbook.Close(SaveChanges=False)
+            except Exception:
+                pass
+        if excel is not None:
+            try:
+                excel.Quit()
+            except Exception:
+                pass
+
+    return result
+
+def test_functions(test_case : int, args : list = None):
+    global g_json_indent
+
+    g_json_indent = 2
+    if test_case == 1:
+        parse_by_xml(args[0] if args else "sample\\test_macro.xlsm")
+    elif test_case == 2:
+        result = get_work_sheet_list(args[0] if args else "sample\\test_macro.xlsm")
+        print_log(f'get_work_sheet_list:\n{result}')
+    elif test_case == 3:
+        result = grep_work_books(args[0] if args else "sample", 
+                                 args[1] if len(args) > 1 else "コメント", 
+                                 recursive=(args[2].lower() == "true") if len(args) > 2 else True, 
+                                 regex=(args[3].lower() == "true") if len(args) > 3 else False, 
+                                 option=args[4] if len(args) > 4 else "all")
+        print_log(f'grep_work_books:\n{result}')
+    elif test_case == 4:
+        result = get_work_sheet_summary(args[0] if args else "sample\\test_macro.xlsm", sheet_name=args[1] if len(args) > 1 else None)
+        print_log(f'get_work_sheet_summary:\n{result}')
+    elif test_case == 5:
+        result = get_cell_values_by_row(args[0] if args else "sample\\test_macro.xlsm", args[1] if len(args) > 1 else "目次", args[2] if len(args) > 2 else "1:50")
+        print_log(f'get_cell_values_by_row:\n{result}')
+    elif test_case == 6:
+        result = get_cell_values_by_address(args[0] if args else "sample\\test_macro.xlsm", args[1] if len(args) > 1 else "オートフィルタ", args[2] if len(args) > 2 else "B2:G22")
+        print_log(f'get_cell_values_by_address1:\n{result}')
+        result = get_cell_values_by_address(args[0] if args else "sample\\test_macro.xlsm", args[1] if len(args) > 1 else "目次", args[2] if len(args) > 2 else "A1:X100")
+        print_log(f'get_cell_values_by_address2:\n{result}')
+    elif test_case == 7:
+        result = export_image_files(args[0] if args else "sample\\test_macro.xlsm", out_path=args[1] if len(args) > 1 else ".tmp_export_test", sheet_name=args[2] if len(args) > 2 else "")
+        print_log(f'export_image_files:\n{result}')
+    elif test_case == 8:
+        result = export_vba_macros(args[0] if args else "sample\\test_macro.xlsm", out_path=args[1] if len(args) > 1 else ".tmp_export_test")
+        print_log(f'export_vba_macros:\n{result}')
+    elif test_case == 9:
+        result = get_work_sheets_diff(args[0] if args else "sample\\test_macro.xlsm", args[1] if len(args) > 1 else "sample\\test_macro_diff.xlsm")
+        print_log(f'get_work_sheets_diff:\n{result}')
+    elif test_case == 10:
+        result = get_shape_infos(args[0] if args else "sample\\test_macro.xlsm", sheet_name=args[1] if len(args) > 1 else None)
+        print_log(f'get_shape_infos:\n{result}')
+    elif test_case == 11:
+        result = render_range_to_png(args[0] if args else "sample\\test_macro.xlsm", args[1] if len(args) > 1 else "Sheet1", args[2] if len(args) > 2 else "A1:C5", out_path=args[3] if len(args) > 3 else "")
+        print_log(f'render_range_to_png:\n{result}')
+    else:
+        print_log(f'Unknown test case: {test_case}')
+
 
 def main():
-    global g_json_indent
     parser = argparse.ArgumentParser(description="")
     parser.add_argument("-v", "--verbose", action='store_true')
+    parser.add_argument("--test", type=int, default=0, help="Run test cases (1: parse_by_xml, 2: get_work_sheet_list, 3: grep_work_books, 4: get_work_sheet_summary, 5: get_cell_values_by_row, 6: get_cell_values_by_address, 7: export_image_files, 8: export_vba_macros, 9: get_work_sheets_diff, 10: get_shape_infos, 11: render_range_to_png)")
+    parser.add_argument("--test-args", type=str, default="", help="Arguments for the test case (comma-separated)")
     args = parser.parse_args()
 
     if args.verbose:
         create_log_file()
 
-#   parse_by_xml("sample\\test_macro.xlsm")
-#   parse_by_xml("sample\\test_new_comment.xlsx")
-#   result = get_work_sheet_list("sample\\test_macro.xlsm")
-#   print_log(f'get_work_sheet_list:\n{result}')
-#   result = grep_work_books("sample", "コメント", recursive=True, regex=False, option="all")
-#   print_log(f'grep_work_books:\n{result}')
-#   result = get_work_sheet_summary("sample\\test_macro.xlsm", sheet_name=None)
-#   print_log(f'get_work_sheet_summary:\n{result}')
-#   result = get_cell_values_by_row("sample\\test_macro.xlsm", "オートフィルタ", 2, "C", "D")
-#   print_log(f'get_cell_values_by_row:\n{result}')
-#   result = get_cell_values_by_row("sample\\test_macro.xlsm", "目次", "1:50")
-#   print_log(f'get_cell_values_by_row:\n{result}')
-#   result = get_cell_values_by_address("sample\\test_macro.xlsm", "オートフィルタ", "B2:G22")
-#   print_log(f'get_cell_values_by_address:\n{result}')
-#   g_json_indent = 2
-#   result = get_cell_values_by_address("sample\\test_macro.xlsm", "目次", "A1:X100")
-#   print_log(f'get_cell_values_by_address:\n{result}')
-#   result = export_image_files("sample\\test_macro.xlsm", out_path=".tmp_export_test", sheet_name="")
-#   print_log(f'export_image_files:\n{result}')
-#   result = export_vba_macros("sample\\test_macro.xlsm", out_path=".tmp_export_test")
-#   print_log(f'export_vba_macros:\n{result}')
-#   result = get_work_sheets_diff("sample\\test_macro.xlsm", "sample\\test_macro_diff.xlsm")
-#   print_log(f'get_work_sheets_diff:\n{result}')
-#   result = get_shape_infos("sample\\test_macro.xlsm")
-#   print_log(f'get_shape_infos:\n{result}')
+    if (args.test or 0) > 0:
+        test_functions(args.test, args.test_args.split(",") if args.test_args else [])
+        return
 
     mcp.run()
 
