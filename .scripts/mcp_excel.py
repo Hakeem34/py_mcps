@@ -73,6 +73,12 @@ class BorderInfo:
     diagonal     : dict = dataclasses.field(default_factory=dict)
 
 @dataclasses.dataclass(slots=True)
+class CellStylesInfo:
+    name      : str = ""
+    xf_Id     : str = ""
+    builtinId : str = ""
+
+@dataclasses.dataclass(slots=True)
 class cellXfsInfo:
     numFmt_Id : str = ""
     font_Id   : str = ""
@@ -81,27 +87,34 @@ class cellXfsInfo:
     xf_Id     : str = ""
     alignment : dict = dataclasses.field(default_factory=dict)
     apply     : dict = dataclasses.field(default_factory=dict)
+    applyNumberFormat : bool = False
+    applyFont         : bool = False
+    applyFill         : bool = False
+    applyBorder       : bool = False
 
 @dataclasses.dataclass(slots=True)
-class cellStyleInfo:
-    name      : str = ""
+class cellStyleXfsInfo:
     numFmt_Id : str = ""
     font_Id   : str = ""
     fill_Id   : str = ""
     border_Id : str = ""
-    xf_Id     : str = ""
-    alignment : dict = dataclasses.field(default_factory=dict)
-    apply     : dict = dataclasses.field(default_factory=dict)
+    applyNumberFormat : bool = False
+    applyFont         : bool = False
+    applyFill         : bool = False
+    applyBorder       : bool = False
+    applyAlignment    : bool = False
+    applyProtection   : bool = False
 
 @dataclasses.dataclass(slots=True)
 class StylesInfo:
-    numFmts    : dict = dataclasses.field(default_factory=dict)
-    cellStyles : list = dataclasses.field(default_factory=list)
-    cellXfs    : list = dataclasses.field(default_factory=list)
-    fonts      : list = dataclasses.field(default_factory=list)
-    borders    : list = dataclasses.field(default_factory=list)
-    fills      : list = dataclasses.field(default_factory=list)
-    dxfs       : list = dataclasses.field(default_factory=list)
+    numFmts      : dict = dataclasses.field(default_factory=dict)
+    cellStyles   : list = dataclasses.field(default_factory=list)
+    cellStyleXfs : list = dataclasses.field(default_factory=list)
+    cellXfs      : list = dataclasses.field(default_factory=list)
+    fonts        : list = dataclasses.field(default_factory=list)
+    borders      : list = dataclasses.field(default_factory=list)
+    fills        : list = dataclasses.field(default_factory=list)
+    dxfs         : list = dataclasses.field(default_factory=list)
 
 @dataclasses.dataclass(slots=True)
 class WorkSheetXML:
@@ -270,6 +283,37 @@ def print_worksheet_info(ws_obj : WorkSheetXML):
             print_log(f'HyperLink: ref={hl.ref} location={hl.location} display={hl.display} rid={hl.rid}', indent=2)
     return
 
+def print_styles_info(styles_info : StylesInfo):
+    print_log(f'------------------------------------------- Styles Info -------------------------------------------', indent=1)
+    print_log(f'numFmts={len(styles_info.numFmts)} cellStyles={len(styles_info.cellStyles)} cellXfs={len(styles_info.cellXfs)} fonts={len(styles_info.fonts)} borders={len(styles_info.borders)} fills={len(styles_info.fills)} dxfs={len(styles_info.dxfs)}', indent=2)
+    print_log(f'--------------------------------------- NumFmts Info ---------------------------------------', indent=2)
+    for numFmtId, numFmt in styles_info.numFmts.items():
+        print_log(f'numFmtId={numFmtId} formatCode={numFmt}', indent=3)
+    print_log(f'--------------------------------------- Fonts Info ---------------------------------------', indent=2)
+    for idx, font in enumerate(styles_info.fonts):
+        print_log(f'Font[{idx}]: name={font.name} charset={font.charset} family={font.family} size={font.size} color={font.color}', indent=3)
+    print_log(f'--------------------------------------- Borders Info ---------------------------------------', indent=2)
+    for idx, border in enumerate(styles_info.borders):
+        print_log(f'Border[{idx}]: left={border.left} right={border.right} top={border.top} bottom={border.bottom} diagonal={border.diagonal}', indent=3)
+    print_log(f'--------------------------------------- Fills Info ---------------------------------------', indent=2)
+    for idx, fill in enumerate(styles_info.fills):
+        print_log(f'Fill[{idx}]: patternType={fill.patternType} fgColor={fill.fgColor} bgColor={fill.bgColor}', indent=3)
+    print_log(f'--------------------------------------- DXFs Info ---------------------------------------', indent=2)
+    for idx, dxf in enumerate(styles_info.dxfs):
+        print_log(f'DXF[{idx}]: font={dxf.font} fill={dxf.fill} border={dxf.border}', indent=3)
+    print_log(f'--------------------------------------- CellStyles Info ---------------------------------------', indent=2)
+    for idx, cellStyle in enumerate(styles_info.cellStyles):
+        print_log(f'CellStyle[{idx}]: name={cellStyle.name} xfId={cellStyle.xf_Id} builtinId={cellStyle.builtinId}', indent=3)
+    print_log(f'--------------------------------------- CellStyleXfs Info ---------------------------------------', indent=2)
+    for idx, cellStyleXf in enumerate(styles_info.cellStyleXfs):
+        print_log(f'CellStyleXf[{idx}]: numFmtId={cellStyleXf.numFmt_Id} fontId={cellStyleXf.font_Id} fillId={cellStyleXf.fill_Id} borderId={cellStyleXf.border_Id} applyNumberFormat={cellStyleXf.applyNumberFormat} applyFont={cellStyleXf.applyFont} applyFill={cellStyleXf.applyFill} applyBorder={cellStyleXf.applyBorder} applyAlignment={cellStyleXf.applyAlignment} applyProtection={cellStyleXf.applyProtection}', indent=3)
+    print_log(f'--------------------------------------- CellXfs Info ---------------------------------------', indent=2)
+    for idx, cellXf in enumerate(styles_info.cellXfs):
+        print_log(f'CellXf[{idx}]: numFmtId={cellXf.numFmt_Id} fontId={cellXf.font_Id} fillId={cellXf.fill_Id} borderId={cellXf.border_Id} xfId={cellXf.xf_Id} alignment={cellXf.alignment} applyNumberFormat={cellXf.applyNumberFormat} applyFont={cellXf.applyFont} applyFill={cellXf.applyFill} applyBorder={cellXf.applyBorder}', indent=3)
+    
+      
+    return
+
 def print_workbook_info(wb_obj : WorkBookXML):
     print_log(f'\n------------------------------------------- WorkBook Info : {wb_obj.wb_path} -------------------------------------------')
     print_log(f'WorkSheets: {len(wb_obj.work_sheets)}', indent=1)
@@ -279,7 +323,9 @@ def print_workbook_info(wb_obj : WorkBookXML):
     print_log(f'SharedStrings: {len(wb_obj.shared_strings)}', indent=1)
     print_log(f'Persons: {len(wb_obj.person_info)}', indent=1)
     print_log(f'Names: {len(wb_obj.names)}', indent=1)
-    print_log(f'Styles: numFmts={len(wb_obj.styles_info.numFmts)} cellStyles={len(wb_obj.styles_info.cellStyles)} cellXfs={len(wb_obj.styles_info.cellXfs)} fonts={len(wb_obj.styles_info.fonts)} borders={len(wb_obj.styles_info.borders)} fills={len(wb_obj.styles_info.fills)} dxfs={len(wb_obj.styles_info.dxfs)}', indent=1)
+    print_styles_info(wb_obj.styles_info)
+#   print_log(f'Styles: numFmts={len(wb_obj.styles_info.numFmts)} cellStyles={len(wb_obj.styles_info.cellStyles)} cellXfs={len(wb_obj.styles_info.cellXfs)} fonts={len(wb_obj.styles_info.fonts)} borders={len(wb_obj.styles_info.borders)} fills={len(wb_obj.styles_info.fills)} dxfs={len(wb_obj.styles_info.dxfs)}', indent=1)
+
     print_log(f'VBA Macros: {len(wb_obj.vba_macros)}', indent=1)
     return
 
@@ -965,11 +1011,40 @@ def parse_styles(z : zipfile.ZipFile, wb_obj : WorkBookXML):
 
         # cellStyleXfs
         for cell_style_xf in styles_xml.xpath('//main:cellStyleXfs/main:xf', namespaces=NS):
-            cell_style_info = cellStyleInfo()
+            cell_style_info = cellStyleXfsInfo()
             cell_style_info.numFmt_Id = cell_style_xf.get('numFmtId')
-
+            cell_style_info.font_Id = cell_style_xf.get('fontId')
+            cell_style_info.fill_Id = cell_style_xf.get('fillId')
+            cell_style_info.border_Id = cell_style_xf.get('borderId')
+            cell_style_info.applyNumberFormat = cell_style_xf.get('applyNumberFormat')
+            cell_style_info.applyFont = cell_style_xf.get('applyFont')
+            cell_style_info.applyFill = cell_style_xf.get('applyFill')
+            cell_style_info.applyBorder = cell_style_xf.get('applyBorder')
+            cell_style_info.applyAlignment = cell_style_xf.get('applyAlignment')
+            cell_style_info.applyProtection = cell_style_xf.get('applyProtection')
 #           print_log(f'cellStyleXfs numFmtId={cell_style_info.numFmt_Id}')
+            wb_obj.styles_info.cellStyleXfs.append(cell_style_info)
+
+        # CellStyles
+        for cell_style in styles_xml.xpath('//main:cellStyles/main:cellStyle', namespaces=NS):
+            cell_style_info = CellStylesInfo()
+            cell_style_info.name = cell_style.get('name')
+            cell_style_info.xf_Id = cell_style.get('xfId')
+            cell_style_info.builtinId = cell_style.get('builtinId')
             wb_obj.styles_info.cellStyles.append(cell_style_info)
+
+        # cellXfs
+        for cell_xf in styles_xml.xpath('//main:cellXfs/main:xf', namespaces=NS):
+            cell_xf_info = cellXfsInfo()
+            cell_xf_info.numFmt_Id = cell_xf.get('numFmtId')
+            cell_xf_info.font_Id = cell_xf.get('fontId')
+            cell_xf_info.fill_Id = cell_xf.get('fillId')
+            cell_xf_info.border_Id = cell_xf.get('borderId')
+            cell_xf_info.applyNumberFormat = cell_xf.get('applyNumberFormat')
+            cell_xf_info.applyFont = cell_xf.get('applyFont')
+            cell_xf_info.applyFill = cell_xf.get('applyFill')
+            cell_xf_info.applyBorder = cell_xf.get('applyBorder')
+            wb_obj.styles_info.cellXfs.append(cell_xf_info)
 
 
 def parse_shared_string(z : zipfile.ZipFile, wb_obj : WorkBookXML):
@@ -1099,7 +1174,6 @@ def parse_by_xml(wb_path):
         wb_obj            = parse_work_book(wb_path, z)
         wb_obj.vba_macros = parse_vba(wb_path)
     
-    print_workbook_info(wb_obj)
     return wb_obj
 
 
@@ -1866,7 +1940,8 @@ def get_shape_infos(wb_path : str, sheet_name : str = None) -> str:
                 "name": shape.name,
                 "type": shape.type,
                 "text": shape.text,
-                "descr": shape.descr
+                "descr": shape.descr,
+                "geometry": shape.geometry
             })
         shape_infos[ws_name] = shapes_list
 
@@ -1957,12 +2032,14 @@ def render_range_to_png(wb_path : str, sheet_name : str, cell_range : str, out_p
 
     return result
 
+
 def test_functions(test_case : int, args : list = None):
     global g_json_indent
 
     g_json_indent = 2
     if test_case == 1:
-        parse_by_xml(args[0] if args else "sample\\test_macro.xlsm")
+        wb_obj = parse_by_xml(args[0] if args else "sample\\test_macro.xlsm")
+        print_workbook_info(wb_obj)
     elif test_case == 2:
         result = get_work_sheet_list(args[0] if args else "sample\\test_macro.xlsm")
         print_log(f'get_work_sheet_list:\n{result}')
