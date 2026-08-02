@@ -1,11 +1,16 @@
 import os
 import sys
 import json
+import importlib
 import requests
 import dataclasses
 import tempfile
 import subprocess
-from mcp.server.fastmcp import FastMCP
+
+_mcp_server_mod = importlib.import_module("mcp.server")
+FastMCP = getattr(_mcp_server_mod, "MCPServer", None)
+if FastMCP is None:
+    FastMCP = importlib.import_module("mcp.server.fastmcp").FastMCP
 
 g_speakers = []
 

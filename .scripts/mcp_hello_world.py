@@ -1,5 +1,10 @@
 import datetime
-from mcp.server.fastmcp import FastMCP
+import importlib
+
+_mcp_server_mod = importlib.import_module("mcp.server")
+FastMCP = getattr(_mcp_server_mod, "MCPServer", None)
+if FastMCP is None:
+    FastMCP = importlib.import_module("mcp.server.fastmcp").FastMCP
 
 # MCPサーバーのインスタンスを作成
 mcp = FastMCP("MyFirstMCP")

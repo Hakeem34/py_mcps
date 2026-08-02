@@ -5,6 +5,7 @@ import argparse
 import datetime
 import json
 import posixpath
+import importlib
 from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.utils.cell import coordinate_to_tuple
 
@@ -18,7 +19,12 @@ from difflib import SequenceMatcher
 import dataclasses
 from pathlib import Path
 from pathlib import PurePosixPath
-from mcp.server.fastmcp import FastMCP
+
+# mcp <= 1.17 had FastMCP in mcp.server.fastmcp; newer versions expose MCPServer.
+_mcp_server_mod = importlib.import_module("mcp.server")
+FastMCP = getattr(_mcp_server_mod, "MCPServer", None)
+if FastMCP is None:
+    FastMCP = importlib.import_module("mcp.server.fastmcp").FastMCP
 
 EMU_PER_PIXEL = 9525
 EMU_PER_MM    = 36000
@@ -2058,9 +2064,7 @@ def test_functions(test_case : int, args : list = None):
         print_log(f'get_cell_values_by_row:\n{result}')
     elif test_case == 6:
         result = get_cell_values_by_address(args[0] if args else "sample\\test_macro.xlsm", args[1] if len(args) > 1 else "オートフィルタ", args[2] if len(args) > 2 else "B2:G22")
-        print_log(f'get_cell_values_by_address1:\n{result}')
-        result = get_cell_values_by_address(args[0] if args else "sample\\test_macro.xlsm", args[1] if len(args) > 1 else "目次", args[2] if len(args) > 2 else "A1:X100")
-        print_log(f'get_cell_values_by_address2:\n{result}')
+        print_log(f'get_cell_values_by_address:\n{result}')
     elif test_case == 7:
         result = export_image_files(args[0] if args else "sample\\test_macro.xlsm", out_path=args[1] if len(args) > 1 else ".tmp_export_test", sheet_name=args[2] if len(args) > 2 else "")
         print_log(f'export_image_files:\n{result}')

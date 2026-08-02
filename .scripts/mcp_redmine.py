@@ -1,6 +1,11 @@
 import sys
-from mcp.server.fastmcp import FastMCP
+import importlib
 from redminelib import Redmine
+
+_mcp_server_mod = importlib.import_module("mcp.server")
+FastMCP = getattr(_mcp_server_mod, "MCPServer", None)
+if FastMCP is None:
+    FastMCP = importlib.import_module("mcp.server.fastmcp").FastMCP
 
 # 1. 接続設定（環境に合わせて書き換えてください）
 REDMINE_URL = 'http://localhost:3000/'

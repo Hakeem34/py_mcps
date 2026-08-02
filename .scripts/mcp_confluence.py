@@ -1,9 +1,14 @@
 import os
 import re
 import sys
+import importlib
 import requests
 from requests.auth import HTTPBasicAuth
-from mcp.server.fastmcp import FastMCP
+
+_mcp_server_mod = importlib.import_module("mcp.server")
+FastMCP = getattr(_mcp_server_mod, "MCPServer", None)
+if FastMCP is None:
+    FastMCP = importlib.import_module("mcp.server.fastmcp").FastMCP
 
 
 g_space_keys = {}

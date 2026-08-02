@@ -7,9 +7,15 @@ import subprocess
 import dataclasses
 import json
 import shlex
+import importlib
+from typing import Optional
 from urllib.parse import urlparse, unquote
 from pathlib import Path
-from mcp.server.fastmcp import FastMCP
+
+_mcp_server_mod = importlib.import_module("mcp.server")
+FastMCP = getattr(_mcp_server_mod, "MCPServer", None)
+if FastMCP is None:
+    FastMCP = importlib.import_module("mcp.server.fastmcp").FastMCP
 
 
 g_log_file = None
