@@ -183,11 +183,18 @@ def print_response_metadata(model: Any, credits: Any) -> None:
 
 
 def response_content(response: list[Any]) -> str:
-	return "".join(
-		part["value"]
-		for part in response
-		if isinstance(part, dict) and isinstance(part.get("value"), str)
-	)
+	parts: list[str] = []
+	for part in response:
+		if not isinstance(part, dict):
+			continue
+		value = part.get("value")
+		if isinstance(value, str):
+			parts.append(value)
+		elif part.get("kind") == "inlineReference":
+			resolve_id = part.get("resolveId")
+			reference = resolve_id if isinstance(resolve_id, str) else "unknown"
+			parts.append(f"[inline reference unavailable: {reference}]")
+	return "".join(parts)
 
 
 def print_response(response: list[Any], model: Any, credits: Any) -> bool:
@@ -380,7 +387,7 @@ def load_transcript_history(path: Path) -> dict[str, tuple[Any, str]]:
 	history: dict[str, tuple[Any, str]] = {}
 	current_prompt: str | None = None
 	current_timestamp: Any = None
-	final_response: str | None = None
+	response_parts: list[str] = []
 	with path.open("r", encoding="utf-8") as stream:
 		for line in stream:
 			try:
@@ -393,21 +400,20 @@ def load_transcript_history(path: Path) -> dict[str, tuple[Any, str]]:
 			if not isinstance(data, dict):
 				continue
 			if event.get("type") == "user.message":
-				if current_prompt is not None and final_response is not None:
-					history[current_prompt] = (current_timestamp, final_response)
+				if current_prompt is not None and response_parts:
+					history[current_prompt] = (current_timestamp, "\n\n".join(response_parts))
 				content = data.get("content")
 				current_prompt = content if isinstance(content, str) else None
 				current_timestamp = event.get("timestamp")
-				final_response = None
+				response_parts = []
 			elif (
 				current_prompt is not None
 				and event.get("type") == "assistant.message"
-				and data.get("toolRequests") == []
 				and isinstance(data.get("content"), str)
 			):
-				final_response = data["content"]
-	if current_prompt is not None and final_response is not None:
-		history[current_prompt] = (current_timestamp, final_response)
+				response_parts.append(data["content"])
+	if current_prompt is not None and response_parts:
+		history[current_prompt] = (current_timestamp, "\n\n".join(response_parts))
 	return history
 
 
