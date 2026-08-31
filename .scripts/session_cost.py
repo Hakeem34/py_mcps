@@ -13,8 +13,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from sympy import re
-
 g_log_file = None
 
 class WorkspaceInfo:
@@ -207,14 +205,29 @@ def read_chat_sessions_jsonl(session_info: SessionInfo, jsonl_file: Path):
 							requests = value.get("requests", [])
 							for request in requests:
 								g_log_file.write(f"    Request: {request}\n")
-								for req_kei, req_val in request.items():
-									g_log_file.write(f"      Request Key: {req_kei}, Value: {req_val}\n")
+								for req_key, req_val in request.items():
+									g_log_file.write(f"      Request Key: {req_key}, Value: {req_val}\n")
 				elif kind == 1:
 					key = msg.get("k", None)
 					value = msg.get("v", None)
 					if key == "customTitle":
 						if value != session_info.title:
 							g_log_file.write(f"    Custom title changed from '{session_info.title}' to '{value}'\n")
+					elif key == ["requests"]:
+						g_log_file.write(f"    Storange Set Requests log!: {value}\n")
+						exit(-1)
+					elif len(key) == 3:
+						if key[0] == "requests" and isinstance(key[1], int):
+							request_index = key[1]
+							sub_key = key[2]
+							if sub_key == "result":
+								g_log_file.write(f"    Set Request Index: {request_index}, Sub Key: {sub_key}, Value: ...\n")
+							else:
+								g_log_file.write(f"    Set Request Index: {request_index}, Sub Key: {sub_key}, Value: {value}\n")
+						else:
+							g_log_file.write(f"  kind[1]: Unexpected key format: {key}\n")
+					else:							
+						g_log_file.write(f"  kind[1]: Key has more than one element: {key}\n")
 
 #					g_log_file.write(f"  kind[1]: Key={key}, Value={value}\n")
 					g_log_file.write(f"  kind[1]: Key={key}\n")
@@ -225,9 +238,36 @@ def read_chat_sessions_jsonl(session_info: SessionInfo, jsonl_file: Path):
 					g_log_file.write(f"  kind[2]: Key={key}\n")
 					if key == ["requests"]:
 						for request in value:
-							g_log_file.write(f"    Request: {request}\n")
-							for req_kei, req_val in request.items():
-								g_log_file.write(f"      Request Key: {req_kei}, Value: {req_val}\n")
+							g_log_file.write(f"    Request: ...\n")
+							for req_key, req_val in request.items():
+								if req_key == "result":
+									g_log_file.write(f"      Update Request Key: result, Value: ...\n")
+								elif req_key == "modeInfo":
+									g_log_file.write(f"      Update Request Key: modeInfo, Value: ...\n")
+								elif req_key == "agent":
+									g_log_file.write(f"      Update Request Key: agent, Value: ...\n")
+								elif req_key == "variableData":
+									g_log_file.write(f"      Update Request Key: variableData, Value: ...\n")
+								elif req_key == "response":
+									g_log_file.write(f"      Update Request Key: response, Value: ...\n")
+								elif req_key == "message":
+									g_log_file.write(f"      Update Request Key: message, Value: ...\n")
+								else:
+									g_log_file.write(f"      Update Request Key: {req_key}, Value: {req_val}\n")
+					elif len(key) == 3:
+						if key[0] == "requests" and isinstance(key[1], int):
+							request_index = key[1]
+							sub_key = key[2]
+							if sub_key == "copilotCredits":
+								g_log_file.write(f"    Request Index: {request_index}, copilotCredits Value: {value}\n")
+							elif sub_key == "response":
+								g_log_file.write(f"    Request Index: {request_index}, response Value: ...\n")
+							else:
+								g_log_file.write(f"    Request Index: {request_index}, Sub Key: {sub_key}, Value: {value}\n")
+						else:
+							g_log_file.write(f"  kind[2]: Unexpected key format: {key}\n")
+					else:							
+						g_log_file.write(f"  kind[2]: Key has more than one element: {key}\n")
 				else:
 					g_log_file.write(f"    Handling chat message of unknown kind: {kind}\n")
 #				g_log_file.write(f"Read message: {msg}\n")
