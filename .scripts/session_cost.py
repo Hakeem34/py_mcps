@@ -183,6 +183,102 @@ def read_from_ws_db(workspace: WorkspaceInfo) -> list[dict[str, Any]]:
 
 	conn.close()
 
+def read_chat_session_kind0(session_info: SessionInfo, value: dict):
+	for item in value:
+		if item == "creationDate":
+			creation_date = value.get("creationDate", 0)
+			if isinstance(creation_date, (int, float)):
+				session_info.creationDate = datetime.datetime.fromtimestamp(creation_date / 1000, tz=datetime.timezone.utc)
+				g_log_file.write(f"    Creation Date (UTC): {session_info.creationDate.isoformat()}\n")
+		elif item == "requests":
+			requests = value.get("requests", [])
+			for request in requests:
+				g_log_file.write(f"    Request: {request}\n")
+				for req_key, req_val in request.items():
+					g_log_file.write(f"      Request Key: {req_key}, Value: {req_val}\n")
+		elif item == "inputState":
+			input_states = value.get("inputState", None)
+			for is_key, is_val in input_states.items():
+				if is_key == "selectedModel":
+					selected_model_infos = is_val
+					for smi_key, smi_val in selected_model_infos.items():
+						if smi_key == "metadata":
+							for meta_key, meta_val in smi_val.items():
+								g_log_file.write(f"        Metadata Key: {meta_key}, Value: {meta_val}\n")
+						else:
+							g_log_file.write(f"      Selected Model Info: {smi_key} : {smi_val}\n")
+				else:
+					g_log_file.write(f"    Input State: {is_key} : {is_val} {type(is_val)}\n")
+
+		else:
+			g_log_file.write(f"    Other item in kind[0]: {item} : {value.get(item, None)}\n")
+
+def read_chat_session_kind1(session_info: SessionInfo, key:list, value: dict):
+	if key == "customTitle":
+		if value != session_info.title:
+			g_log_file.write(f"    Custom title changed from '{session_info.title}' to '{value}'\n")
+	elif key == ["requests"]:
+		g_log_file.write(f"    Storange Set Requests log!: {value}\n")
+		exit(-1)
+	elif len(key) == 3:
+		if key[0] == "requests" and isinstance(key[1], int):
+			request_index = key[1]
+			sub_key = key[2]
+			if sub_key == "result":
+	#								g_log_file.write(f"    Set Request Index: {request_index}, Sub Key: {sub_key}, Value: ...\n")
+				g_log_file.write(f"    Set Request Index: {request_index}, Sub Key: {sub_key}, Value: {value}\n")
+			else:
+				g_log_file.write(f"    Set Request Index: {request_index}, Sub Key: {sub_key}, Value: {value}\n")
+		else:
+			g_log_file.write(f"  kind[1]: Unexpected key format: {key}\n")
+	elif len(key) == 1:
+		g_log_file.write(f"  kind[1]: Key has one element: {key} : {value}\n")
+	else:							
+		g_log_file.write(f"  kind[1]: Key has more than one element: {key} : {value}\n")
+
+def read_chat_session_kind2(session_info: SessionInfo, key:list, value: dict):
+	if key == ["requests"]:
+		for request in value:
+			g_log_file.write(f"    Request: ...\n")
+			for req_key, req_val in request.items():
+				if req_key == "result":
+#					g_log_file.write(f"      Update Request Key: result, Value: ...\n")
+					g_log_file.write(f"      Update Request Key: {req_key}, Value: {req_val}\n")
+				elif req_key == "modeInfo":
+#					g_log_file.write(f"      Update Request Key: modeInfo, Value: ...\n")
+					g_log_file.write(f"      Update Request Key: {req_key}, Value: {req_val}\n")
+				elif req_key == "agent":
+#					g_log_file.write(f"      Update Request Key: agent, Value: ...\n")
+					g_log_file.write(f"      Update Request Key: {req_key}, Value: {req_val}\n")
+				elif req_key == "variableData":
+#					g_log_file.write(f"      Update Request Key: variableData, Value: ...\n")
+					g_log_file.write(f"      Update Request Key: {req_key}, Value: {req_val}\n")
+				elif req_key == "response":
+#					g_log_file.write(f"      Update Request Key: response, Value: ...\n")
+					g_log_file.write(f"      Update Request Key: {req_key}, Value: {req_val}\n")
+				elif req_key == "message":
+#					g_log_file.write(f"      Update Request Key: message, Value: ...\n")
+					g_log_file.write(f"      Update Request Key: {req_key}, Value: {req_val}\n")
+				else:
+					g_log_file.write(f"      Update Request Key: {req_key}, Value: {req_val}\n")
+	elif len(key) == 3:
+		if key[0] == "requests" and isinstance(key[1], int):
+			request_index = key[1]
+			sub_key = key[2]
+			if sub_key == "copilotCredits":
+				g_log_file.write(f"    Request Index: {request_index}, copilotCredits Value: {value}\n")
+			elif sub_key == "response":
+#				g_log_file.write(f"    Request Index: {request_index}, response Value: ...\n")
+				g_log_file.write(f"    Request Index: {request_index}, Sub Key: {sub_key}, Value: {value}\n")
+			else:
+				g_log_file.write(f"    Request Index: {request_index}, Sub Key: {sub_key}, Value: {value}\n")
+		else:
+			g_log_file.write(f"  kind[2]: Unexpected key format: {key}\n")
+	else:							
+		g_log_file.write(f"  kind[2]: Key has more than one element: {key}\n")
+
+
+
 def read_chat_sessions_jsonl(session_info: SessionInfo, jsonl_file: Path):
 	g_log_file.write(f"--------------------------------------------------------- Reading from chat session file: {jsonl_file} ---------------------------------------------------------\n")
 	with jsonl_file.open("r", encoding="utf-8") as f:
@@ -190,84 +286,17 @@ def read_chat_sessions_jsonl(session_info: SessionInfo, jsonl_file: Path):
 			try:
 				msg = json.loads(line)
 				kind = msg.get("kind", "None")
-				g_log_file.write(f"  [Chat] Kind: {kind}\n")
 				if kind == 0:
 					value = msg.get("v", None)
-					g_log_file.write(f"  kind[0]: Value={value}\n")
-					for item in value:
-#						g_log_file.write(f"    Item: {item}\n")
-						if item == "creationDate":
-							creation_date = value.get("creationDate", 0)
-							if isinstance(creation_date, (int, float)):
-								session_info.creationDate = datetime.datetime.fromtimestamp(creation_date / 1000, tz=datetime.timezone.utc)
-								g_log_file.write(f"    Creation Date (UTC): {session_info.creationDate.isoformat()}\n")
-						elif item == "requests":
-							requests = value.get("requests", [])
-							for request in requests:
-								g_log_file.write(f"    Request: {request}\n")
-								for req_key, req_val in request.items():
-									g_log_file.write(f"      Request Key: {req_key}, Value: {req_val}\n")
+					read_chat_session_kind0(session_info, value)
 				elif kind == 1:
 					key = msg.get("k", None)
 					value = msg.get("v", None)
-					if key == "customTitle":
-						if value != session_info.title:
-							g_log_file.write(f"    Custom title changed from '{session_info.title}' to '{value}'\n")
-					elif key == ["requests"]:
-						g_log_file.write(f"    Storange Set Requests log!: {value}\n")
-						exit(-1)
-					elif len(key) == 3:
-						if key[0] == "requests" and isinstance(key[1], int):
-							request_index = key[1]
-							sub_key = key[2]
-							if sub_key == "result":
-								g_log_file.write(f"    Set Request Index: {request_index}, Sub Key: {sub_key}, Value: ...\n")
-							else:
-								g_log_file.write(f"    Set Request Index: {request_index}, Sub Key: {sub_key}, Value: {value}\n")
-						else:
-							g_log_file.write(f"  kind[1]: Unexpected key format: {key}\n")
-					else:							
-						g_log_file.write(f"  kind[1]: Key has more than one element: {key}\n")
-
-#					g_log_file.write(f"  kind[1]: Key={key}, Value={value}\n")
-					g_log_file.write(f"  kind[1]: Key={key}\n")
+					read_chat_session_kind1(session_info, key, value)
 				elif kind == 2:
 					key = msg.get("k", None)
 					value = msg.get("v", None)
-#					g_log_file.write(f"  kind[2]: Key={key}, Value={value}\n")
-					g_log_file.write(f"  kind[2]: Key={key}\n")
-					if key == ["requests"]:
-						for request in value:
-							g_log_file.write(f"    Request: ...\n")
-							for req_key, req_val in request.items():
-								if req_key == "result":
-									g_log_file.write(f"      Update Request Key: result, Value: ...\n")
-								elif req_key == "modeInfo":
-									g_log_file.write(f"      Update Request Key: modeInfo, Value: ...\n")
-								elif req_key == "agent":
-									g_log_file.write(f"      Update Request Key: agent, Value: ...\n")
-								elif req_key == "variableData":
-									g_log_file.write(f"      Update Request Key: variableData, Value: ...\n")
-								elif req_key == "response":
-									g_log_file.write(f"      Update Request Key: response, Value: ...\n")
-								elif req_key == "message":
-									g_log_file.write(f"      Update Request Key: message, Value: ...\n")
-								else:
-									g_log_file.write(f"      Update Request Key: {req_key}, Value: {req_val}\n")
-					elif len(key) == 3:
-						if key[0] == "requests" and isinstance(key[1], int):
-							request_index = key[1]
-							sub_key = key[2]
-							if sub_key == "copilotCredits":
-								g_log_file.write(f"    Request Index: {request_index}, copilotCredits Value: {value}\n")
-							elif sub_key == "response":
-								g_log_file.write(f"    Request Index: {request_index}, response Value: ...\n")
-							else:
-								g_log_file.write(f"    Request Index: {request_index}, Sub Key: {sub_key}, Value: {value}\n")
-						else:
-							g_log_file.write(f"  kind[2]: Unexpected key format: {key}\n")
-					else:							
-						g_log_file.write(f"  kind[2]: Key has more than one element: {key}\n")
+					read_chat_session_kind2(session_info, key, value)
 				else:
 					g_log_file.write(f"    Handling chat message of unknown kind: {kind}\n")
 #				g_log_file.write(f"Read message: {msg}\n")
