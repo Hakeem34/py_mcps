@@ -222,13 +222,27 @@ def read_chat_session_kind1(session_info: SessionInfo, key:list, value: dict):
 		exit(-1)
 	elif len(key) == 3:
 		if key[0] == "requests" and isinstance(key[1], int):
+#			g_log_file.write(f"  kind[1]: Key has three elements: {key} : ...\n")
 			request_index = key[1]
 			sub_key = key[2]
 			if sub_key == "result":
-	#								g_log_file.write(f"    Set Request Index: {request_index}, Sub Key: {sub_key}, Value: ...\n")
-				g_log_file.write(f"    Set Request Index: {request_index}, Sub Key: {sub_key}, Value: {value}\n")
+				g_log_file.write(f"  kind[1]: Set Request Index: {request_index}, Sub Key: {sub_key}, Value: ...\n")
+#				g_log_file.write(f"  kind[1]: Set Request Index: {request_index}, Sub Key: {sub_key}, Value: {value}\n")
+				for result_key, result_val in value.items():
+					if result_key == "metadata":
+						g_log_file.write(f"    Set Request Index: {request_index} Result Key: {result_key}, Value: ...\n")
+						for meta_key, meta_val in result_val.items():
+							if meta_key == "toolCallRounds":
+								g_log_file.write(f"      Tool Call Rounds: ...\n")
+								for tcr in meta_val:
+									for tcr_key, tcr_val in tcr.items():
+										g_log_file.write(f"        Tool Call Round Key: {tcr_key}, Value: {tcr_val}\n")
+							else:
+								g_log_file.write(f"      Metadata Key: {meta_key}, Value: {meta_val}\n")
+					else:
+						g_log_file.write(f"    Set Request Index: {request_index}, Sub Key: {sub_key}, Result Key: {result_key}, Value: {result_val}\n")
 			else:
-				g_log_file.write(f"    Set Request Index: {request_index}, Sub Key: {sub_key}, Value: {value}\n")
+				g_log_file.write(f"  kind[1]: Set Request Index: {request_index}, Sub Key: {sub_key}, Value: {value}\n")
 		else:
 			g_log_file.write(f"  kind[1]: Unexpected key format: {key}\n")
 	elif len(key) == 1:
@@ -246,7 +260,14 @@ def read_chat_session_kind2(session_info: SessionInfo, key:list, value: dict):
 					g_log_file.write(f"      Update Request Key: {req_key}, Value: {req_val}\n")
 				elif req_key == "modeInfo":
 #					g_log_file.write(f"      Update Request Key: modeInfo, Value: ...\n")
-					g_log_file.write(f"      Update Request Key: {req_key}, Value: {req_val}\n")
+#					g_log_file.write(f"      Update Request Key: {req_key}, Value: {req_val}\n")
+					for mode_key, mode_val in req_val.items():
+						if mode_key == "modeInstructions":
+#							g_log_file.write(f"        Mode Info Key: {mode_key}, Value: ...\n")
+							for instr_key, instr_val in mode_val.items():
+								g_log_file.write(f"          Mode Instruction Key: {instr_key}, Value: {instr_val}\n")
+						else:
+							g_log_file.write(f"        Mode Info Key: {mode_key}, Value: {mode_val}\n")
 				elif req_key == "agent":
 #					g_log_file.write(f"      Update Request Key: agent, Value: ...\n")
 					g_log_file.write(f"      Update Request Key: {req_key}, Value: {req_val}\n")
@@ -255,10 +276,18 @@ def read_chat_session_kind2(session_info: SessionInfo, key:list, value: dict):
 					g_log_file.write(f"      Update Request Key: {req_key}, Value: {req_val}\n")
 				elif req_key == "response":
 #					g_log_file.write(f"      Update Request Key: response, Value: ...\n")
-					g_log_file.write(f"      Update Request Key: {req_key}, Value: {req_val}\n")
+#					g_log_file.write(f"      Update Request Key: {req_key}, Value: {req_val}\n")
+					resp_index = 0
+					for resp in req_val:
+						g_log_file.write(f"        Response Index: {resp_index}\n")
+						for resp_key, resp_val in resp.items():
+							g_log_file.write(f"          Response Key: {resp_key}, Value: {resp_val}\n")
+						resp_index += 1	
 				elif req_key == "message":
 #					g_log_file.write(f"      Update Request Key: message, Value: ...\n")
-					g_log_file.write(f"      Update Request Key: {req_key}, Value: {req_val}\n")
+#					g_log_file.write(f"      Update Request Key: {req_key}, Value: {req_val}\n")
+					for msg_key, msg_val in req_val.items():
+						g_log_file.write(f"        Message Key: {msg_key}, Value: {msg_val}\n")
 				else:
 					g_log_file.write(f"      Update Request Key: {req_key}, Value: {req_val}\n")
 	elif len(key) == 3:
@@ -266,12 +295,23 @@ def read_chat_session_kind2(session_info: SessionInfo, key:list, value: dict):
 			request_index = key[1]
 			sub_key = key[2]
 			if sub_key == "copilotCredits":
-				g_log_file.write(f"    Request Index: {request_index}, copilotCredits Value: {value}\n")
+				g_log_file.write(f"  kind[2]: Request Index: {request_index}, copilotCredits Value: {value}\n")
 			elif sub_key == "response":
-#				g_log_file.write(f"    Request Index: {request_index}, response Value: ...\n")
-				g_log_file.write(f"    Request Index: {request_index}, Sub Key: {sub_key}, Value: {value}\n")
+#				g_log_file.write(f"  kind[2]: Request Index: {request_index}, response Value: ...\n")
+#				g_log_file.write(f"  kind[2]: Request Index: {request_index}, Sub Key: {sub_key}, Value: {value}\n")
+				resp_index = 0
+				for resp in value:
+					g_log_file.write(f"  kind[2]: Request Index: {request_index}, Response Index: {resp_index}\n")
+					for resp_key, resp_val in resp.items():
+						if resp_key == "toolSpecificData":
+							g_log_file.write(f"    Response Key: {resp_key}, Value: ...\n")
+							for tsd_key, tsd_val in resp_val.items():
+								g_log_file.write(f"      Tool Specific Data Key: {tsd_key}, Value: {tsd_val}\n")
+						else:
+							g_log_file.write(f"    Response Key: {resp_key}, Value: {resp_val}\n")
+					resp_index += 1
 			else:
-				g_log_file.write(f"    Request Index: {request_index}, Sub Key: {sub_key}, Value: {value}\n")
+				g_log_file.write(f"  kind[2]: Request Index: {request_index}, Sub Key: {sub_key}, Value: {value}\n")
 		else:
 			g_log_file.write(f"  kind[2]: Unexpected key format: {key}\n")
 	else:							
