@@ -237,10 +237,19 @@ def read_chat_session_kind1(session_info: SessionInfo, key:list, value: dict):
 								for tcr in meta_val:
 									for tcr_key, tcr_val in tcr.items():
 										g_log_file.write(f"        Tool Call Round Key: {tcr_key}, Value: {tcr_val}\n")
+							elif meta_key == "toolCallResults":
+								g_log_file.write(f"      Tool Call Results: ...\n")
+								for tcr_key, tcr_val in meta_val.items():
+									g_log_file.write(f"        Tool Call Result Key: {tcr_key}, Value: {tcr_val}\n")
 							else:
 								g_log_file.write(f"      Metadata Key: {meta_key}, Value: {meta_val}\n")
 					else:
 						g_log_file.write(f"    Set Request Index: {request_index}, Sub Key: {sub_key}, Result Key: {result_key}, Value: {result_val}\n")
+			elif sub_key == "promptTokenDetails":
+				g_log_file.write(f"  kind[1]: Set Request Index: {request_index}, Sub Key: {sub_key}, Value: ...\n")
+				for token_detail in value:
+					for ptd_key, ptd_val in token_detail.items():
+						g_log_file.write(f"    Prompt Token Detail Key: {ptd_key}, Value: {ptd_val}\n")
 			else:
 				g_log_file.write(f"  kind[1]: Set Request Index: {request_index}, Sub Key: {sub_key}, Value: {value}\n")
 		else:
