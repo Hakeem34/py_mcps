@@ -151,10 +151,12 @@ class ChatSessionRequestAndResponse:
 		self.outputTokens: int = 0
 		self.promptTokenDetails: list[PromptTokenDetails] = []
 		self.agent_content_file: str = ""
+		self.agent_id: str = ""
 		self.allowedSubagents: list[str] = []
 		self.message_text: str = ""
 		self.result_details_model: str = ""
 		self.result_details_credit: float = 0.0
+		self.completed_at: str = ""
 
 class TranscriptMessage:
 	def __init__(self) -> None:
@@ -238,7 +240,7 @@ class SessionInfo:
 			key = key[0] if key else None
 
 		if key == "creationDate":
-			self.creationDate = datetime.datetime.fromtimestamp(int(value) / 1000).strftime("%Y/%m/%d %H:%M:%S")
+			self.creationDate = timestamp_to_str(value)
 		elif key == "customTitle":
 			if self.title != value:
 				g_log_file.write(f"Title unmatch  {self.title} vs {value}\n") if g_log_file else None
@@ -300,7 +302,11 @@ class SessionInfo:
 						pass
 					elif kind == "inlineReference":
 						name = get_key_value_from_descendants(res_msg, ["name"], "")
-						req_res.response_msgs.append(f"参照：**{name}**")
+						res_msg = ChatSessionResponseMessage()
+						res_msg.response = f"**参照：{name}**"
+						res_msg.timestamp = "0"
+						res_msg.phase = ""
+						req_res.response_msgs.append(res_msg)
 						g_log_file.write(f"Inline reference: {name}\n") if g_log_file else None
 						pass
 					elif kind == "undoStop":
@@ -309,7 +315,11 @@ class SessionInfo:
 						pass
 					elif kind == "textEditGroup":
 						edit_path = get_key_value_from_descendants(res_msg, ["path"], "")
-						req_res.response_msgs.append(f"**ファイル更新：{edit_path}**")
+						res_msg = ChatSessionResponseMessage()
+						res_msg.response = f"**ファイル更新：{edit_path}**"
+						res_msg.timestamp = "0"
+						res_msg.phase = ""
+						req_res.response_msgs.append(res_msg)
 						g_log_file.write(f"Text edit group: {edit_path}\n") if g_log_file else None
 						pass
 					else:
@@ -351,12 +361,15 @@ class SessionInfo:
 		kind="2"の新しいリクエストを解析するメソッド
 		"""
 		req_res = ChatSessionRequestAndResponse()
+		req_res.agent_id = os.path.basename(self.current_model_info.mode_id)
 		req_res.requestId = get_key_value_from_descendants(message, ["requestId"], "")
 		req_res.start_time = get_key_value_from_descendants(message, ["timestamp"], "")
 		req_res.message_text = get_key_value_from_descendants(message, ["message", "text"], "")
 		req_res.responseId = get_key_value_from_descendants(message, ["responseId"], "")
 		req_res.response_timestamp = get_key_value_from_descendants(message, ["responseTimestamp"], "")
 		req_res.promptTokens = get_key_value_from_descendants(message, ["promptTokens"], "")
+		req_res.completed_at = get_key_value_from_descendants(message, ["modelState", "completedAt"], "0")
+		g_log_file.write(f"Parsing new request completed_at: {timestamp_to_str(req_res.completed_at)}, agent_id: {req_res.agent_id}\n") if g_log_file else None
 		token_details = find_key_from_descendants(message, ["promptTokenDetails"])
 		if token_details is not None:
 			for token_detail in token_details.children:
@@ -388,8 +401,8 @@ class SessionInfo:
 		detail_text = get_key_value_from_descendants(message, ["details"], "")
 		prompt_tokens = get_key_value_from_descendants(message, ["metadata", "promptTokens"], "")
 		output_tokens = get_key_value_from_descendants(message, ["metadata", "outputTokens"], "")
-		req_res.prompt_tokens = int(prompt_tokens) if type(prompt_tokens) == int or (type(prompt_tokens) == str and prompt_tokens.isdigit()) else req_res.prompt_tokens
-		req_res.output_tokens = int(output_tokens) if type(output_tokens) == int or (type(output_tokens) == str and output_tokens.isdigit()) else req_res.output_tokens
+		req_res.prompt_tokens = int(prompt_tokens) if type(prompt_tokens) == int or (type(prompt_tokens) == str and prompt_tokens.isdigit()) else req_res.promptTokens
+		req_res.output_tokens = int(output_tokens) if type(output_tokens) == int or (type(output_tokens) == str and output_tokens.isdigit()) else req_res.outputTokens
 		toolCallRounds = find_key_from_descendants(message, ["metadata", "toolCallRounds"])
 		g_log_file.write(f"Parsed request result for index {index}: prompt_tokens={prompt_tokens}, output_tokens={output_tokens}, detail_text={detail_text}\n") if g_log_file else None
 		if not isinstance(detail_text, str):
@@ -408,6 +421,9 @@ class SessionInfo:
 				f"Matched model and credit for index {index}: "
 				f"{req_res.result_details_model} / {req_res.result_details_credit}\n"
 			) if g_log_file else None
+
+def timestamp_to_str(timestamp: str) -> str:
+	return datetime.datetime.fromtimestamp(int(timestamp)/1000).strftime("%Y/%m/%d %H:%M:%S")
 
 def get_first_valid_line(text):
 	"""Return the first non-empty line from the given text."""
@@ -604,12 +620,14 @@ def disassemble_chat_session_value(session_info: SessionInfo, chat_session_messa
 		if chat_session_message.key == "content":
 			g_log_file.write(f"{' ' * indent}Key: {chat_session_message.key}, Value: {get_first_valid_line(value)}, omit msg : content\n")
 		elif chat_session_message.key == "text":
-			if chat_session_message.parent is not None and chat_session_message.parent.parent is not None and chat_session_message.parent.parent.key == "renderedUserMessage":
-				g_log_file.write(f"{' ' * indent}Key: {chat_session_message.key}, Value: {get_first_valid_line(value)}  omit msg : text\n")
+			if chat_session_message.parent is not None and chat_session_message.parent.parent is not None and (chat_session_message.parent.parent.key == "renderedUserMessage" or chat_session_message.parent.parent.key == "renderedGlobalContext"):
+				g_log_file.write(f"{' ' * indent}Key: {chat_session_message.key}, Value: {get_first_valid_line(value)},  omit msg : text\n")
+			else:
+				g_log_file.write(f"{' ' * indent}Key: {chat_session_message.key}, Value: {value}\n")
 		elif chat_session_message.key == "encrypted":
 			g_log_file.write(f"{' ' * indent}Key: {chat_session_message.key}, Value:  omit msg : encrypted\n")
-		elif chat_session_message.key == "timestamp" or chat_session_message.key == "responseTimestamp":
-			time_text = datetime.datetime.fromtimestamp(int(value)/1000).strftime("%Y/%m/%d %H:%M:%S")
+		elif chat_session_message.key == "timestamp" or chat_session_message.key == "responseTimestamp" or chat_session_message.key == "completedAt":
+			time_text = timestamp_to_str(value)
 			g_log_file.write(f"{' ' * indent}Key: {chat_session_message.key}, Value: {value} ({time_text})\n")
 		else:
 			g_log_file.write(f"{' ' * indent}Key: {chat_session_message.key}, Value: {value}\n")
@@ -862,6 +880,7 @@ def parase_chat_session_msg(chat_msg : ChatSessionMessage, session_info : Sessio
 	if (type(chat_msg.key) == list and chat_msg.key[0] == "inputState") or chat_msg.key == "inputState":
 		session_info.current_model_info.update_by_inputState_msg(chat_msg)
 		g_log_file.write(f"CurrentModelInfo: {session_info.current_model_info}\n")
+
 	elif (type(chat_msg.key) == list and len(chat_msg.key) == 3):
 		if chat_msg.key[0] == "requests" and chat_msg.key[2] == "result":
 			index = int(chat_msg.key[1])
@@ -869,6 +888,19 @@ def parase_chat_session_msg(chat_msg : ChatSessionMessage, session_info : Sessio
 		elif chat_msg.key[0] == "requests" and chat_msg.key[2] == "response":
 			index = int(chat_msg.key[1])
 			session_info.parse_response_update(chat_msg, index)
+		elif chat_msg.key[0] == "requests" and chat_msg.key[2] == "modelState":
+			index = int(chat_msg.key[1])
+			req_res = session_info.request_and_response[index] if index < len(session_info.request_and_response) else None
+			if req_res is None:
+				g_log_file.write(f"Request and response not found for index: {index}\n")
+				print(f"Request and response not found for index: {index}\n")
+				exit(1)
+			else:
+				value = get_key_value_from_descendants(chat_msg, ["value"], "0")
+				if value == 1:
+					req_res.completed_at = get_key_value_from_descendants(chat_msg, ["completedAt"], "0")
+					g_log_file.write(f"Request completed at: {timestamp_to_str(req_res.completed_at)}\n") if g_log_file else None
+
 	elif chat_msg.key == ['requests']:
 		if len(chat_msg.children) != 1 or chat_msg.children[0].key != "0":
 			g_log_file.write(f"Unexpected 'requests' key length: {chat_msg.key}\n")
@@ -919,12 +951,18 @@ def output_workspace_summary(workspace: WorkspaceInfo) -> None:
 			parase_chat_session_msg(chat_msg, session)
 			g_log_file.write("\n")
 
-		summary_file.write(f"| Request | Response Message | Model | Credit |\n")
+		summary_file.write(f"| Request | Response Message | Agent<br>Model | Credit |\n")
 		summary_file.write(f"| --- | --- | --- | --- |\n")
 		for req_res in session.request_and_response:
-			req_text = req_res.message_text.replace('\r\n', r'<br>')
-#			res_text = "<br>".join([msg.replace('\r\n', r'<br>').replace('\r', r'<br>').replace('\n', r'<br>') for msg in req_res.response_msgs])
-			res_text = 	req_res.response_msgs[-1].response.replace('\r\n', r'<br>').replace('\r', r'<br>').replace('\n', r'<br>')
+			start_time_str = timestamp_to_str(req_res.start_time)
+			completed_at_str = timestamp_to_str(req_res.completed_at)
+			diff_str = (int(req_res.completed_at) - int(req_res.start_time)) // 1000
+#			req_text = f"{timestamp_to_str(req_res.start_time)}<br><br>{req_res.message_text.replace('\r\n', r'<br>')}"
+			req_text = f"{req_res.message_text.replace('\r\n', r'<br>')}"
+#			res_text = "<br>".join([msg.response.replace('\r\n', r'<br>').replace('\r', r'<br>').replace('\n', r'<br>') for msg in req_res.response_msgs])
+#			res_text = f"{timestamp_to_str(req_res.completed_at)}<br><br>" + req_res.response_msgs[-1].response.replace('\r\n', r'<br>').replace('\r', r'<br>').replace('\n', r'<br>')
+			res_text = req_res.response_msgs[-1].response.replace('\r\n', r'<br>').replace('\r', r'<br>').replace('\n', r'<br>')
+			summary_file.write(f"| {start_time_str} | {completed_at_str} ({diff_str}sec) | {req_res.agent_id} |  |\n")
 			summary_file.write(f"| {req_text} | {res_text} | {req_res.result_details_model} | {req_res.result_details_credit} |\n")
 
 	summary_file.close()
