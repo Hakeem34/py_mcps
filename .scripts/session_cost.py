@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+from operator import index
 import os
 import re
 import sqlite3
@@ -134,8 +135,7 @@ class ChatSessionMessage:
 
 class ChatSessionResponseMessage:
 	def __init__(self) -> None:
-		self.phase = ""
-		self.timestamp = ""
+		self.kind = ""
 		self.response = ""
 
 class ChatSessionRequestAndResponse:
@@ -157,6 +157,7 @@ class ChatSessionRequestAndResponse:
 		self.result_details_model: str = ""
 		self.result_details_credit: float = 0.0
 		self.completed_at: str = ""
+		self.final_answer: str = ""
 
 class TranscriptMessage:
 	def __init__(self) -> None:
@@ -271,87 +272,86 @@ class SessionInfo:
 
 		return result_details_model, result_details_credit
 
+	def parse_response_message(self, message: ChatSessionMessage, index: int) -> ChatSessionResponseMessage:
+		"""
+		レスポンスメッセージを解析する
+
+		Args:
+			message (ChatSessionMessage): 解析するレスポンスメッセージ
+			index (int): メッセージのインデックス
+
+		Returns:
+			ChatSessionResponseMessage: 解析結果のレスポンスメッセージ
+		"""
+
+		kind = get_key_value_from_descendants(message, ["kind"], "")
+		if kind == "":
+			value = get_key_value_from_descendants(message, ['value'], '')
+			if value == "\n```\n":
+				pass
+			else:
+				g_log_file.write(f"Response message {index}: {value}\n") if g_log_file else None
+				res_msg = ChatSessionResponseMessage()
+				res_msg.response = value
+				res_msg.kind = "text"
+				return res_msg
+		else:
+			if kind == "mcpServersStarting":
+				pass
+			elif kind == "thinking":
+				pass
+			elif kind == "questionCarousel":
+				pass
+			elif kind == "toolInvocationSerialized":
+				toolCallId = get_key_value_from_descendants(message, ["toolCallId"], "")
+				tool_id = get_key_value_from_descendants(message, ["toolId"], "")
+				g_log_file.write(f"Tool invocation: toolCallId={toolCallId}, tool_id={tool_id}\n") if g_log_file else None
+				pass
+			elif kind == "inlineReference":
+				name = get_key_value_from_descendants(message, ["name"], "")
+				res_msg = ChatSessionResponseMessage()
+				res_msg.response = f"**参照：{name}**"
+				res_msg.kind = "inlineReference"
+				g_log_file.write(f"Inline reference: {name}\n") if g_log_file else None
+				return res_msg
+			elif kind == "undoStop":
+				pass
+			elif kind == "codeblockUri":
+				pass
+			elif kind == "textEditGroup":
+				edit_path = get_key_value_from_descendants(message, ["path"], "")
+				res_msg = ChatSessionResponseMessage()
+				res_msg.response = f"**ファイル更新：{edit_path}**"
+				res_msg.kind = "textEditGroup"
+				g_log_file.write(f"Text edit group: {edit_path}\n") if g_log_file else None
+				return res_msg
+			else:
+				g_log_file.write(f"Response message {index}: {get_key_value_from_descendants(message, ['kind'], '')}\n") if g_log_file else None
+
+		return None
+
 	def parse_request_response(self, message: ChatSessionMessage, req_res: ChatSessionRequestAndResponse) -> ChatSessionRequestAndResponse:
 		if message.key == "response":
 			for i, res_msg in enumerate(message.children):
-				kind = get_key_value_from_descendants(res_msg, ["kind"], "")
-				timestamp = get_key_value_from_descendants(res_msg, ["timestamp"], "")
-				phase = get_key_value_from_descendants(res_msg, ["phase"], "")
-				if kind == "":
-					value = get_key_value_from_descendants(res_msg, ['value'], '')
-					if value == "\n```\n":
-#							g_log_file.write(f"Response message {i}: ```\n") if g_log_file else None
-						pass
-					else:
-						g_log_file.write(f"Response message {i}: {value}\n") if g_log_file else None
-						res_msg = ChatSessionResponseMessage()
-						res_msg.response = value
-						res_msg.timestamp = timestamp
-						res_msg.phase = phase
-						req_res.response_msgs.append(res_msg)
-				else:
-					if kind == "mcpServersStarting":
-						pass
-					elif kind == "thinking":
-						pass
-					elif kind == "questionCarousel":
-						pass
-					elif kind == "toolInvocationSerialized":
-						toolCallId = get_key_value_from_descendants(res_msg, ["toolCallId"], "")
-						tool_id = get_key_value_from_descendants(res_msg, ["toolId"], "")
-						pass
-					elif kind == "inlineReference":
-						name = get_key_value_from_descendants(res_msg, ["name"], "")
-						res_msg = ChatSessionResponseMessage()
-						res_msg.response = f"**参照：{name}**"
-						res_msg.timestamp = "0"
-						res_msg.phase = ""
-						req_res.response_msgs.append(res_msg)
-						g_log_file.write(f"Inline reference: {name}\n") if g_log_file else None
-						pass
-					elif kind == "undoStop":
-						pass
-					elif kind == "codeblockUri":
-						pass
-					elif kind == "textEditGroup":
-						edit_path = get_key_value_from_descendants(res_msg, ["path"], "")
-						res_msg = ChatSessionResponseMessage()
-						res_msg.response = f"**ファイル更新：{edit_path}**"
-						res_msg.timestamp = "0"
-						res_msg.phase = ""
-						req_res.response_msgs.append(res_msg)
-						g_log_file.write(f"Text edit group: {edit_path}\n") if g_log_file else None
-						pass
-					else:
-						g_log_file.write(f"Response message {i}: {get_key_value_from_descendants(res_msg, ['kind'], '')}\n") if g_log_file else None
+				res_msg = self.parse_response_message(res_msg, i)
+				if res_msg:
+					req_res.response_msgs.append(res_msg)
 
 		return req_res
 
 	def parse_response_update(self, message: ChatSessionMessage, index: int) -> None:
+		"""
+		指定されたインデックスのレスポンス更新を解析するメソッド
+		"""
 		req_res = self.request_and_response[index] if index < len(self.request_and_response) else None
 		if not req_res:
 			g_log_file.write(f"Response update not found for index: {index}\n") if g_log_file else None
 			exit(1)
 
 		for i, child_msg in enumerate(message.children):
-			kind = get_key_value_from_descendants(child_msg, ["kind"], "")
-			timestamp = get_key_value_from_descendants(child_msg, ["timestamp"], "")
-			phase = get_key_value_from_descendants(child_msg, ["phase"], "")
-			if kind == "":
-				value = get_key_value_from_descendants(child_msg, ['value'], '')
-				if value == "\n```\n":
-#					g_log_file.write(f"Response message {i}: ```\n") if g_log_file else None
-					pass
-				else:
-					g_log_file.write(f"Response message {i}: {value}\n") if g_log_file else None
-					res_msg = ChatSessionResponseMessage()
-					res_msg.response = value
-					res_msg.timestamp = timestamp
-					res_msg.phase = phase
-					req_res.response_msgs.append(res_msg)
-#				g_log_file.write(f"Response update child message {i} has empty kind: {child_msg.key}\n") if g_log_file else None
-			else:
-				g_log_file.write(f"Response update child message {i}: kind={kind}, key={child_msg.key}\n") if g_log_file else None
+			res_msg = self.parse_response_message(child_msg, i)
+			if res_msg:
+				req_res.response_msgs.append(res_msg)
 
 		g_log_file.write(f"Parsed response update for index {index}\n") if g_log_file else None
 		return
@@ -380,22 +380,29 @@ class SessionInfo:
 #				g_log_file.write(f"Token detail_info: {token_detai_info.category}: {token_detai_info.label} : {token_detai_info.percentage}\n") if g_log_file else None
 				req_res.promptTokenDetails.append(token_detai_info)
 
+		self.request_and_response.append(req_res)
 		for child_msg in message.children:
 			if child_msg.key == "response":
 				self.parse_request_response(child_msg, req_res)
 			elif child_msg.key == "result":
-				detail_text = get_key_value_from_descendants(message, ["details"], "")
-				req_res.result_details_model, req_res.result_details_credit = self.get_model_and_credit(message)
-				pass
+				self.parse_request_result(child_msg, len(self.request_and_response) - 1)
 
-		g_log_file.write(f"Parsed new request:[{req_res.requestId}]{req_res.message_text}\n") if g_log_file else None
-		self.request_and_response.append(req_res)
+		g_log_file.write(f"Parsed new request[{len(self.request_and_response)-1}]:[{req_res.requestId}]{req_res.message_text}\n") if g_log_file else None
 		return
+
+	def parse_toolCallRounds(self, message: ChatSessionMessage, req_res: ChatSessionRequestAndResponse) -> None:
+		g_log_file.write(f"Parsing toolCallRounds for request: {req_res.requestId}\n") if g_log_file else None
+		for i, child_msg in enumerate(message.children):
+			phase_value = get_key_value_from_descendants(child_msg, ["phase"], "")
+			if phase_value == "final_answer":
+				req_res.final_answer = get_key_value_from_descendants(child_msg, ["response"], "")
+				g_log_file.write(f"Parsed final_answer: {req_res.final_answer}\n") if g_log_file else None
 
 	def parse_request_result(self, message: ChatSessionMessage, index: int) -> None:
 		req_res = self.request_and_response[index] if index < len(self.request_and_response) else None
 		if not req_res:
 			g_log_file.write(f"Request result not found for index: {index}\n") if g_log_file else None
+			# Exit the program if the request result is not found
 			exit(1)
 
 		detail_text = get_key_value_from_descendants(message, ["details"], "")
@@ -403,24 +410,24 @@ class SessionInfo:
 		output_tokens = get_key_value_from_descendants(message, ["metadata", "outputTokens"], "")
 		req_res.prompt_tokens = int(prompt_tokens) if type(prompt_tokens) == int or (type(prompt_tokens) == str and prompt_tokens.isdigit()) else req_res.promptTokens
 		req_res.output_tokens = int(output_tokens) if type(output_tokens) == int or (type(output_tokens) == str and output_tokens.isdigit()) else req_res.outputTokens
-		toolCallRounds = find_key_from_descendants(message, ["metadata", "toolCallRounds"])
 		g_log_file.write(f"Parsed request result for index {index}: prompt_tokens={prompt_tokens}, output_tokens={output_tokens}, detail_text={detail_text}\n") if g_log_file else None
 		if not isinstance(detail_text, str):
 			return
 
-		result = re.fullmatch(
-			r"(?P<model>[^\r\n\u2022]+?)"
-			r"(?:\s*\u2022\s*(?P<credit>\d+(?:\.\d+)?)\s+credits?)?",
-			detail_text.strip(),
-			re.IGNORECASE,
-		)
-		if result:
-			req_res.result_details_model = result.group("model").strip()
-			req_res.result_details_credit = float(result.group("credit") or 0.0)
-			g_log_file.write(
-				f"Matched model and credit for index {index}: "
-				f"{req_res.result_details_model} / {req_res.result_details_credit}\n"
-			) if g_log_file else None
+		for child_msg in message.children:
+			if child_msg.key == "details":
+				req_res.result_details_model, req_res.result_details_credit = self.get_model_and_credit(message)
+				g_log_file.write(
+					f"Matched model and credit for index {index}: "
+					f"{req_res.result_details_model} / {req_res.result_details_credit}\n"
+				) if g_log_file else None
+			elif child_msg.key == "metadata":
+				for grandchild_msg in child_msg.children:
+					if grandchild_msg.key == "toolCallRounds":
+						self.parse_toolCallRounds(grandchild_msg, req_res)
+				pass
+		return 
+
 
 def timestamp_to_str(timestamp: str) -> str:
 	return datetime.datetime.fromtimestamp(int(timestamp)/1000).strftime("%Y/%m/%d %H:%M:%S")
@@ -958,10 +965,14 @@ def output_workspace_summary(workspace: WorkspaceInfo) -> None:
 			completed_at_str = timestamp_to_str(req_res.completed_at)
 			diff_str = (int(req_res.completed_at) - int(req_res.start_time)) // 1000
 #			req_text = f"{timestamp_to_str(req_res.start_time)}<br><br>{req_res.message_text.replace('\r\n', r'<br>')}"
-			req_text = f"{req_res.message_text.replace('\r\n', r'<br>')}"
+			req_text = f"{req_res.message_text.replace('\r\n', r'<br>')}<br><br>promptTokens={req_res.promptTokens}"
 #			res_text = "<br>".join([msg.response.replace('\r\n', r'<br>').replace('\r', r'<br>').replace('\n', r'<br>') for msg in req_res.response_msgs])
 #			res_text = f"{timestamp_to_str(req_res.completed_at)}<br><br>" + req_res.response_msgs[-1].response.replace('\r\n', r'<br>').replace('\r', r'<br>').replace('\n', r'<br>')
-			res_text = req_res.response_msgs[-1].response.replace('\r\n', r'<br>').replace('\r', r'<br>').replace('\n', r'<br>')
+
+			if req_res.final_answer != "":
+				res_text = req_res.final_answer.replace('\r\n', r'<br>').replace('\r', r'<br>').replace('\n', r'<br>')
+			else:
+				res_text = req_res.response_msgs[-1].response.replace('\r\n', r'<br>').replace('\r', r'<br>').replace('\n', r'<br>')
 			summary_file.write(f"| {start_time_str} | {completed_at_str} ({diff_str}sec) | {req_res.agent_id} |  |\n")
 			summary_file.write(f"| {req_text} | {res_text} | {req_res.result_details_model} | {req_res.result_details_credit} |\n")
 
