@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import json
-from operator import index
 import os
 import re
 import sqlite3
@@ -23,6 +23,7 @@ class WorkspaceInfo:
 		self.workspace_storage_dir = Path()
 		self.workspace_dir = Path()
 		self.workspace_id = ""
+		self.workspace_json_modified_at: datetime.datetime | None = None
 		self.db_path = Path()
 		self.sessions: list[SessionInfo] = []
 
@@ -147,8 +148,8 @@ class ChatSessionRequestAndResponse:
 		self.response_timestamp: str = ""
 		self.response_msgs: list[ChatSessionResponseMessage] = []
 		self.completionTokens: int = 0
-		self.promptTokens: int = 0
-		self.outputTokens: int = 0
+		self.promptTokens: str = ""
+		self.outputTokens: str = ""
 		self.promptTokenDetails: list[PromptTokenDetails] = []
 		self.agent_content_file: str = ""
 		self.agent_id: str = ""
@@ -158,6 +159,7 @@ class ChatSessionRequestAndResponse:
 		self.result_details_credit: float = 0.0
 		self.completed_at: str = ""
 		self.final_answer: str = ""
+		self.elapsedMs: str = ""
 
 class TranscriptMessage:
 	def __init__(self) -> None:
@@ -182,7 +184,7 @@ class SessionInfo:
 	def __init__(self) -> None:
 		self.session_file_name: str = ""
 		self.session_id: str = ""
-		self.title: str = ""
+		self.title: str = None
 		self.archived: bool = False
 		self.startTime: str = ""
 		self.creationDate: str = ""
@@ -310,7 +312,7 @@ class SessionInfo:
 			elif kind == "inlineReference":
 				name = get_key_value_from_descendants(message, ["name"], "")
 				res_msg = ChatSessionResponseMessage()
-				res_msg.response = f"**参照：{name}**"
+				res_msg.response = f"**{name}**"
 				res_msg.kind = "inlineReference"
 				g_log_file.write(f"Inline reference: {name}\n") if g_log_file else None
 				return res_msg
@@ -321,7 +323,7 @@ class SessionInfo:
 			elif kind == "textEditGroup":
 				edit_path = get_key_value_from_descendants(message, ["path"], "")
 				res_msg = ChatSessionResponseMessage()
-				res_msg.response = f"**ファイル更新：{edit_path}**"
+				res_msg.response = f"**{edit_path}**"
 				res_msg.kind = "textEditGroup"
 				g_log_file.write(f"Text edit group: {edit_path}\n") if g_log_file else None
 				return res_msg
@@ -331,6 +333,7 @@ class SessionInfo:
 		return None
 
 	def parse_request_response(self, message: ChatSessionMessage, req_res: ChatSessionRequestAndResponse) -> ChatSessionRequestAndResponse:
+		g_log_file.write(f"Parsing request[{len(self.request_and_response)-1}] response for message key: {message.key}\n") if g_log_file else None
 		if message.key == "response":
 			for i, res_msg in enumerate(message.children):
 				res_msg = self.parse_response_message(res_msg, i)
@@ -369,7 +372,10 @@ class SessionInfo:
 		req_res.response_timestamp = get_key_value_from_descendants(message, ["responseTimestamp"], "")
 		req_res.promptTokens = get_key_value_from_descendants(message, ["promptTokens"], "")
 		req_res.completed_at = get_key_value_from_descendants(message, ["modelState", "completedAt"], "0")
-		g_log_file.write(f"Parsing new request completed_at: {timestamp_to_str(req_res.completed_at)}, agent_id: {req_res.agent_id}\n") if g_log_file else None
+		req_res.elapsedMs = get_key_value_from_descendants(message, ["elapsedMs"], "")
+		req_res.completionTokens = get_key_value_from_descendants(message, ["completionTokens"], "")
+		req_res.model_info = copy.copy(self.current_model_info)
+		g_log_file.write(f"Parsing new request[{len(self.request_and_response)}] completed_at: {timestamp_to_str(req_res.completed_at)}, agent_id: {req_res.agent_id}\n") if g_log_file else None
 		token_details = find_key_from_descendants(message, ["promptTokenDetails"])
 		if token_details is not None:
 			for token_detail in token_details.children:
@@ -399,6 +405,7 @@ class SessionInfo:
 				g_log_file.write(f"Parsed final_answer: {req_res.final_answer}\n") if g_log_file else None
 
 	def parse_request_result(self, message: ChatSessionMessage, index: int) -> None:
+		g_log_file.write(f"Parsing request result for index: {index}\n") if g_log_file else None
 		req_res = self.request_and_response[index] if index < len(self.request_and_response) else None
 		if not req_res:
 			g_log_file.write(f"Request result not found for index: {index}\n") if g_log_file else None
@@ -406,11 +413,9 @@ class SessionInfo:
 			exit(1)
 
 		detail_text = get_key_value_from_descendants(message, ["details"], "")
-		prompt_tokens = get_key_value_from_descendants(message, ["metadata", "promptTokens"], "")
-		output_tokens = get_key_value_from_descendants(message, ["metadata", "outputTokens"], "")
-		req_res.prompt_tokens = int(prompt_tokens) if type(prompt_tokens) == int or (type(prompt_tokens) == str and prompt_tokens.isdigit()) else req_res.promptTokens
-		req_res.output_tokens = int(output_tokens) if type(output_tokens) == int or (type(output_tokens) == str and output_tokens.isdigit()) else req_res.outputTokens
-		g_log_file.write(f"Parsed request result for index {index}: prompt_tokens={prompt_tokens}, output_tokens={output_tokens}, detail_text={detail_text}\n") if g_log_file else None
+		req_res.promptTokens = get_key_value_from_descendants(message, ["metadata", "promptTokens"], req_res.promptTokens)
+		req_res.outputTokens = get_key_value_from_descendants(message, ["metadata", "outputTokens"], req_res.outputTokens)
+		g_log_file.write(f"Parsed request result for index {index}: prompt_tokens={req_res.promptTokens}, output_tokens={req_res.outputTokens}, detail_text={detail_text}\n") if g_log_file else None
 		if not isinstance(detail_text, str):
 			return
 
@@ -443,6 +448,7 @@ def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(
 		description="Watch Visual Studio Code Copilot Chat transcripts in real time."
 	)
+	input_or_backup = parser.add_mutually_exclusive_group()
 	parser.add_argument(
 		"path",
 		nargs="?",
@@ -450,13 +456,13 @@ def parse_args() -> argparse.Namespace:
 		default=None,
 		help="Path to the workspace to inspect. Defaults to the current working directory.",
 	)
-	parser.add_argument(
+	input_or_backup.add_argument(
 		"-b",
 		"--backup",
 		action="store_true",
 		help="Back up the target WorkspaceStorage folder to the current directory.",
 	)
-	parser.add_argument(
+	input_or_backup.add_argument(
 		"-i",
 		"--input",
 		type=Path,
@@ -533,7 +539,7 @@ def read_from_ws_db(workspace: WorkspaceInfo) -> list[dict[str, Any]]:
 					sessionInfo.session_id=sessionId
 					workspace.append_session(sessionInfo)
 
-				if sessionInfo.title == "":
+				if sessionInfo.title == None:
 					sessionInfo.title = entry_val.get("title", "")
 				elif sessionInfo.title != entry_val.get("title", ""):
 					g_log_file.write(f"  [Warning] Session title mismatch for session ID {sessionId}: existing title '{sessionInfo.title}', new title '{entry_val.get('title', '')}'\n")
@@ -557,7 +563,7 @@ def read_from_ws_db(workspace: WorkspaceInfo) -> list[dict[str, Any]]:
 						sessionInfo = SessionInfo(session_id=session_id)
 						workspace.append_session(sessionInfo)
 
-					if sessionInfo.title == "":
+					if sessionInfo.title == None:
 						sessionInfo.title = session["label"]
 					elif sessionInfo.title != session["label"]:
 						g_log_file.write(f"  [Warning] Session title mismatch for session ID {session_id}: existing title '{sessionInfo.title}', new title '{session['label']}'\n")
@@ -630,10 +636,14 @@ def disassemble_chat_session_value(session_info: SessionInfo, chat_session_messa
 			if chat_session_message.parent is not None and chat_session_message.parent.parent is not None and (chat_session_message.parent.parent.key == "renderedUserMessage" or chat_session_message.parent.parent.key == "renderedGlobalContext"):
 				g_log_file.write(f"{' ' * indent}Key: {chat_session_message.key}, Value: {get_first_valid_line(value)},  omit msg : text\n")
 			else:
-				g_log_file.write(f"{' ' * indent}Key: {chat_session_message.key}, Value: {value}\n")
+				line_number = len(value.splitlines())
+				if line_number > 1:
+					g_log_file.write(f"{' ' * indent}Key: {chat_session_message.key}, Value has {line_number} lines : {get_first_valid_line(value)} \n...\n")
+				else:
+					g_log_file.write(f"{' ' * indent}Key: {chat_session_message.key}, Value: {value}\n")
 		elif chat_session_message.key == "encrypted":
 			g_log_file.write(f"{' ' * indent}Key: {chat_session_message.key}, Value:  omit msg : encrypted\n")
-		elif chat_session_message.key == "timestamp" or chat_session_message.key == "responseTimestamp" or chat_session_message.key == "completedAt":
+		elif chat_session_message.key == "timestamp" or chat_session_message.key == "responseTimestamp" or chat_session_message.key == "completedAt" or chat_session_message.key == "timeSpentWaiting":
 			time_text = timestamp_to_str(value)
 			g_log_file.write(f"{' ' * indent}Key: {chat_session_message.key}, Value: {value} ({time_text})\n")
 		else:
@@ -781,6 +791,7 @@ def workspace_info_from_storage_dir(workspace_dir: Path) -> WorkspaceInfo | None
 			info.workspace_storage_dir = workspace_dir
 			info.workspace_dir = decode_workspace_folder(folder)
 			info.workspace_id = os.path.basename(workspace_dir)
+			info.workspace_json_modified_at = datetime.datetime.fromtimestamp(info_file.stat().st_mtime)
 			db_path = workspace_dir / "state.vscdb"
 			if db_path.exists():
 				info.db_path = db_path
@@ -872,7 +883,7 @@ def get_key_value_from_descendants(chat_msg: ChatSessionMessage, key_stack: list
 	return default
 
 
-def parase_chat_session_msg(chat_msg : ChatSessionMessage, session_info : SessionInfo):
+def parse_chat_session_msg(chat_msg : ChatSessionMessage, session_info : SessionInfo):
 	"""
 	パースされたチャットセッションメッセージを処理し、セッション情報を更新する
 	Args:
@@ -887,6 +898,10 @@ def parase_chat_session_msg(chat_msg : ChatSessionMessage, session_info : Sessio
 	if (type(chat_msg.key) == list and chat_msg.key[0] == "inputState") or chat_msg.key == "inputState":
 		session_info.current_model_info.update_by_inputState_msg(chat_msg)
 		g_log_file.write(f"CurrentModelInfo: {session_info.current_model_info}\n")
+		if len(session_info.request_and_response) > 0:
+			# elapsedMsが未設定の場合のみ、model_infoを更新する
+			if session_info.request_and_response[-1].elapsedMs == "":
+				session_info.request_and_response[-1].model_info = copy.copy(session_info.current_model_info)
 
 	elif (type(chat_msg.key) == list and len(chat_msg.key) == 3):
 		if chat_msg.key[0] == "requests" and chat_msg.key[2] == "result":
@@ -895,6 +910,24 @@ def parase_chat_session_msg(chat_msg : ChatSessionMessage, session_info : Sessio
 		elif chat_msg.key[0] == "requests" and chat_msg.key[2] == "response":
 			index = int(chat_msg.key[1])
 			session_info.parse_response_update(chat_msg, index)
+		elif chat_msg.key[0] == "requests" and chat_msg.key[2] == "completionTokens":
+			index = int(chat_msg.key[1])
+			req_res = session_info.request_and_response[index] if index < len(session_info.request_and_response) else None
+			if req_res is None:
+				g_log_file.write(f"Request and response not found for index: {index}\n")
+				print(f"Request and response not found for index: {index}\n")
+				exit(1)
+			else:
+				req_res.completionTokens = chat_msg.value
+		elif chat_msg.key[0] == "requests" and chat_msg.key[2] == "elapsedMs":
+			index = int(chat_msg.key[1])
+			req_res = session_info.request_and_response[index] if index < len(session_info.request_and_response) else None
+			if req_res is None:
+				g_log_file.write(f"Request and response not found for index: {index}\n")
+				print(f"Request and response not found for index: {index}\n")
+				exit(1)
+			else:
+				req_res.elapsedMs = chat_msg.value
 		elif chat_msg.key[0] == "requests" and chat_msg.key[2] == "modelState":
 			index = int(chat_msg.key[1])
 			req_res = session_info.request_and_response[index] if index < len(session_info.request_and_response) else None
@@ -909,43 +942,95 @@ def parase_chat_session_msg(chat_msg : ChatSessionMessage, session_info : Sessio
 					g_log_file.write(f"Request completed at: {timestamp_to_str(req_res.completed_at)}\n") if g_log_file else None
 
 	elif chat_msg.key == ['requests']:
-		if len(chat_msg.children) != 1 or chat_msg.children[0].key != "0":
-			g_log_file.write(f"Unexpected 'requests' key length: {chat_msg.key}\n")
-			print(f"Unexpected 'requests' key length: {chat_msg.key}\n")
-			exit(1)
+		for child_msg in chat_msg.children:
+			session_info.parse_new_request(child_msg)
 
-		session_info.parse_new_request(chat_msg.children[0])
 
 	for child_msg in chat_msg.children:
-		parase_chat_session_msg(child_msg, session_info)
+		parse_chat_session_msg(child_msg, session_info)
 
 
 
 
-def output_workspace_summary(workspace: WorkspaceInfo) -> None:
+def escape_markdown_table_text(text: Any) -> str:
+	return str(text).replace("|", r"\|")
+
+def output_detail_file(
+	detail_dir: Path,
+	session_number: int,
+	request_index: int,
+	req_res: ChatSessionRequestAndResponse,
+	elapsed_ms_str: int | str,
+) -> str:
+	detail_file_name = f"detail_{request_index:03d}.md"
+	detail_path = detail_dir / detail_file_name
+	with detail_path.open("w", encoding="utf-8") as detail_file:
+		detail_file.write(f"[戻る](../セッションログ.md#session-{session_number})\n\n")
+		detail_file.write(f"# Request {request_index}\n\n")
+		detail_file.write(f"- 開始日時: {timestamp_to_str(req_res.start_time)}\n")
+		detail_file.write(f"- 完了日時: {timestamp_to_str(req_res.completed_at)}\n")
+		detail_file.write(f"- 経過時間: {elapsed_ms_str} sec\n")
+		detail_file.write(f"- Agent: {req_res.agent_id}\n")
+		detail_file.write(f"- Model: {req_res.result_details_model}\n")
+		detail_file.write(f"- Credit: {req_res.result_details_credit}\n")
+		detail_file.write(f"- Prompt tokens: {req_res.promptTokens}\n")
+		detail_file.write(f"- Completion tokens: {req_res.completionTokens}\n\n")
+		detail_file.write("## Request\n\n")
+		detail_file.write(f"{req_res.message_text}\n\n")
+		detail_file.write("## Response\n\n")
+		for response_msg in req_res.response_msgs:
+			if req_res.final_answer is not None:
+				# responseがfinal_answerの先頭と一致した場合、以降のmessageは出力しない
+				if req_res.final_answer.startswith(response_msg.response):
+					break
+
+			detail_file.write(f"{response_msg.response}<br>")
+
+		detail_file.write("\n")
+		if req_res.final_answer is not None:
+			detail_file.write("## Final Answer\n\n")
+			detail_file.write(f"{req_res.final_answer}\n")
+
+	return f"[詳細](./%5B{session_number}%5D/{detail_file_name})"
+
+def output_workspace_summary(workspace: WorkspaceInfo, output_dir: Path, time_stamp: str) -> None:
 	"""
 	ワークスペースのサマリー情報を出力する
 	Args:
 		workspace (WorkspaceInfo): ワークスペース情報のオブジェクト
 	"""
-	time_stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-	target_workspace = workspace.workspace_dir
-	summary_file = open(target_workspace / f"セッションログ_{time_stamp}.md", "w", encoding="utf-8")
+#	summary_file = open(output_dir / f"セッションログ_{time_stamp}.md", "w", encoding="utf-8")
+	summary_file = open(output_dir / f"セッションログ.md", "w", encoding="utf-8")
 	summary_file.write(f"# WorkSpace\n  Path: {workspace.workspace_dir}<br>  Id: {workspace.workspace_id}\n")
-	summary_file.write(f"# Sessions\n| Id | 作成日時 | タイトル | アーカイブ状態 |\n")
-	summary_file.write(f"| --- | --- | --- | --- |\n")
-	for session in workspace.sessions:
+	summary_file.write(f"# Sessions\n| No. | Id | 作成日時 | タイトル | アーカイブ状態 |\n")
+	summary_file.write(f"| --- | --- | --- | --- | --- |\n")
+	for i, session in enumerate(workspace.sessions):
 		if session.archived:
-			summary_file.write(f"| {session.session_id} | {session.creationDate} | {session.title} | アーカイブ済み |\n")
+			summary_file.write(
+				f"| {i+1} | {escape_markdown_table_text(session.session_id)} | "
+				f"{escape_markdown_table_text(session.creationDate)} | "
+					f"[{escape_markdown_table_text(session.title)}](#session-{i+1}) | アーカイブ済み |\n"
+			)
+		elif session.title is not None:
+			summary_file.write(
+				f"| {i+1} | {escape_markdown_table_text(session.session_id)} | "
+				f"{escape_markdown_table_text(session.creationDate)} | "
+				f"[{escape_markdown_table_text(session.title)}](#session-{i+1}) | |\n"
+			)
 		else:
-			summary_file.write(f"| {session.session_id} | {session.creationDate} | {session.title} | |\n")
-	summary_file.write("\n")
-	summary_file.write("\n")
+			pass
+
+	summary_file.write("\n\n")
 
 	# 各セッションの詳細情報を出力
-	for session in workspace.sessions:
-		summary_file.write(f"## [{session.creationDate}] : {session.title}\nId: {session.session_id}\n")
-		summary_file.write(f"### transcript_msgs:\n")
+	for i, session in enumerate(workspace.sessions):
+		if session.title is None:
+			g_log_file.write(f"Skipping session with no title: session_id={session.session_id}\n")
+			continue
+
+		summary_file.write(f"## Session {i+1}\n\n[{session.creationDate}] : {session.title}\n")
+		summary_file.write(f"Id: {session.session_id}\n\n")
+#		summary_file.write(f"### transcript_msgs:\n")
 		for trans_msg in session.transcript_msgs:
 #			summary_file.write(f"  - [{trans_msg.timestamp}] {trans_msg.type}\n")
 			pass
@@ -955,26 +1040,55 @@ def output_workspace_summary(workspace: WorkspaceInfo) -> None:
 		for chat_msg in session.chat_session_msgs:
 #			summary_file.write(f"  - {chat_msg.kind}: {chat_msg.key}\n")
 			g_log_file.write(f"------------------ Parsing chat session message: kind[{chat_msg.kind}]:{chat_msg.key} ------------------\n")
-			parase_chat_session_msg(chat_msg, session)
+			parse_chat_session_msg(chat_msg, session)
 			g_log_file.write("\n")
 
 		summary_file.write(f"| Request | Response Message | Agent<br>Model | Credit |\n")
 		summary_file.write(f"| --- | --- | --- | --- |\n")
-		for req_res in session.request_and_response:
-			start_time_str = timestamp_to_str(req_res.start_time)
-			completed_at_str = timestamp_to_str(req_res.completed_at)
-			diff_str = (int(req_res.completed_at) - int(req_res.start_time)) // 1000
-#			req_text = f"{timestamp_to_str(req_res.start_time)}<br><br>{req_res.message_text.replace('\r\n', r'<br>')}"
-			req_text = f"{req_res.message_text.replace('\r\n', r'<br>')}<br><br>promptTokens={req_res.promptTokens}"
-#			res_text = "<br>".join([msg.response.replace('\r\n', r'<br>').replace('\r', r'<br>').replace('\n', r'<br>') for msg in req_res.response_msgs])
-#			res_text = f"{timestamp_to_str(req_res.completed_at)}<br><br>" + req_res.response_msgs[-1].response.replace('\r\n', r'<br>').replace('\r', r'<br>').replace('\n', r'<br>')
+		detail_dir = output_dir / f"[{i+1}]"
+		detail_dir.mkdir(parents=True, exist_ok=True)
+		for request_index, req_res in enumerate(session.request_and_response, start=1):
+			start_time_str = escape_markdown_table_text(timestamp_to_str(req_res.start_time))
+			completed_at_str = escape_markdown_table_text(timestamp_to_str(req_res.completed_at))
+			if req_res.elapsedMs != "":
+				elapsed_ms_str = int(req_res.elapsedMs) // 1000
+			else:
+				elapsed_ms_str = "-"
+
+			req_text = (
+				escape_markdown_table_text(req_res.message_text.replace("\r\n", r"<br>"))
+				+ f"<br><br>promptTokens={escape_markdown_table_text(req_res.promptTokens)}"
+			)
+#			g_log_file.write(f"Request message text: [{start_time_str}]{req_text} from req_res object: {req_res}\n")
 
 			if req_res.final_answer != "":
-				res_text = req_res.final_answer.replace('\r\n', r'<br>').replace('\r', r'<br>').replace('\n', r'<br>')
+				res_text = escape_markdown_table_text(
+					req_res.final_answer.replace("\r\n", r"<br>").replace("\r", r"<br>").replace("\n", r"<br>")
+				)
+			elif len(req_res.response_msgs) > 0:
+				res_text = escape_markdown_table_text(
+					req_res.response_msgs[-1].response.replace("\r\n", r"<br>").replace("\r", r"<br>").replace("\n", r"<br>")
+				)
 			else:
-				res_text = req_res.response_msgs[-1].response.replace('\r\n', r'<br>').replace('\r', r'<br>').replace('\n', r'<br>')
-			summary_file.write(f"| {start_time_str} | {completed_at_str} ({diff_str}sec) | {req_res.agent_id} |  |\n")
-			summary_file.write(f"| {req_text} | {res_text} | {req_res.result_details_model} | {req_res.result_details_credit} |\n")
+				res_text = "no response"
+				g_log_file.write(f"No response for request message: [{start_time_str}]{req_text}\n")
+
+			res_text += f"<br><br>completionTokens={escape_markdown_table_text(req_res.completionTokens)}"
+			detail_link = output_detail_file(detail_dir, i + 1, request_index, req_res, elapsed_ms_str)
+			req_text += f"<br><br>{detail_link}"
+			summary_file.write(
+				f"| {start_time_str} | {completed_at_str} ({elapsed_ms_str}sec) | "
+				f"{escape_markdown_table_text(req_res.agent_id)} |  |\n"
+			)
+			model_text = "<br>".join(escape_markdown_table_text(value) for value in (
+				req_res.result_details_model,
+				req_res.model_info.reasoningEffort,
+				req_res.model_info.contextSize,
+			))
+			summary_file.write(
+				f"| {req_text} | {res_text} | {model_text} | "
+				f"{escape_markdown_table_text(req_res.result_details_credit)} |\n"
+			)
 
 	summary_file.close()
 	return
@@ -985,8 +1099,11 @@ def main() -> int:
 	# ログファイルの準備
 	now = datetime.datetime.now()
 	time_stamp = now.strftime("%Y%m%d_%H%M%S")
-	log_file_path = f"session_cost_{time_stamp}.log"
-	g_log_file =open(log_file_path, "w", encoding="utf-8")
+	output_dir = Path.cwd() / f"wslog_{time_stamp}"
+	output_dir.mkdir(parents=True, exist_ok=True)
+#	log_file_path = output_dir / f"session_cost_{time_stamp}.log"
+	log_file_path = output_dir / f"session_cost.log"
+	g_log_file = open(log_file_path, "w", encoding="utf-8")
 
 	# 引数の解析とワークスペース情報の取得
 	args = parse_args()
@@ -1052,7 +1169,7 @@ def main() -> int:
 				print(f"Missing session files for session: {session.session_id} (FileName: {session.session_file_name})")
 				g_log_file.write(f"Missing session files for session: {session.session_file_name} (ID: {session.session_id})\n")
 			
-		output_workspace_summary(workspace)
+		output_workspace_summary(workspace, output_dir, time_stamp)
 
 	g_log_file.close()
 	if not match:
