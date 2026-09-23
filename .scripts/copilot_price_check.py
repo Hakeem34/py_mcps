@@ -23,6 +23,25 @@ class ModelMetadata:
     maxOutputTokens: int = 0
     vision: bool = False
 
+    def is_equal(self, other: "ModelMetadata") -> bool:
+        if not isinstance(other, ModelMetadata):
+            return False
+        return (
+            self.name == other.name and
+            self.priceCategory == other.priceCategory and
+            self.inputCost == other.inputCost and
+            self.outputCost == other.outputCost and
+            self.cacheCost == other.cacheCost and
+            self.cacheWriteCost == other.cacheWriteCost and
+            self.longContextInputCost == other.longContextInputCost and
+            self.longContextOutputCost == other.longContextOutputCost and
+            self.longContextCacheCost == other.longContextCacheCost and
+            self.longContextCacheWriteCost == other.longContextCacheWriteCost and
+            self.maxInputTokens == other.maxInputTokens and
+            self.maxOutputTokens == other.maxOutputTokens and
+            self.vision == other.vision
+        )
+
 
 g_model_info = []
 
@@ -78,8 +97,14 @@ with open(log_file_path, "w", encoding="utf-8") as log_file:
                             model_info.maxInputTokens = metadata.get("maxInputTokens", 0)
                             model_info.maxOutputTokens = metadata.get("maxOutputTokens", 0)
                             model_info.vision = capabilities.get("vision", False)
-                            g_model_info.append(model_info)
-                            print(f"[{model_info.name:<20}]:{model_info.priceCategory:<10}, {model_info.inputCost}, {model_info.outputCost}, {model_info.cacheCost}, {model_info.cacheWriteCost}, {model_info.longContextInputCost}, {model_info.longContextOutputCost}, {model_info.longContextCacheCost}, {model_info.longContextCacheWriteCost}, vision: {model_info.vision}", file=log_file)
+
+                            for check_model in g_model_info:
+                                if model_info.is_equal(check_model):
+                                    print(f"duplicate [{model_info.name:<20}]:{model_info.priceCategory:<10}, {model_info.inputCost}, {model_info.outputCost}, {model_info.cacheCost}, {model_info.cacheWriteCost}, {model_info.longContextInputCost}, {model_info.longContextOutputCost}, {model_info.longContextCacheCost}, {model_info.longContextCacheWriteCost}, vision: {model_info.vision}", file=log_file)
+                                    break
+                            else:
+                                g_model_info.append(model_info)
+                                print(f"[{model_info.name:<20}]:{model_info.priceCategory:<10}, {model_info.inputCost}, {model_info.outputCost}, {model_info.cacheCost}, {model_info.cacheWriteCost}, {model_info.longContextInputCost}, {model_info.longContextOutputCost}, {model_info.longContextCacheCost}, {model_info.longContextCacheWriteCost}, vision: {model_info.vision}", file=log_file)
     finally:
         conn.close()
 
