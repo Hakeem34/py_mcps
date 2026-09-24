@@ -560,7 +560,8 @@ def read_from_ws_db(workspace: WorkspaceInfo) -> list[dict[str, Any]]:
 					session_id = decode_session_resource(resource)
 					sessionInfo = workspace.find_session_by_id(session_id)
 					if sessionInfo is None:
-						sessionInfo = SessionInfo(session_id=session_id)
+						sessionInfo = SessionInfo()
+						sessionInfo.session_id=session_id
 						workspace.append_session(sessionInfo)
 
 					if sessionInfo.title == None:
@@ -583,7 +584,8 @@ def read_from_ws_db(workspace: WorkspaceInfo) -> list[dict[str, Any]]:
 					session_id = decode_session_resource(resource)
 					sessionInfo = workspace.find_session_by_id(session_id)
 					if sessionInfo is None:
-						sessionInfo = SessionInfo(session_id=session_id)
+						sessionInfo = SessionInfo()
+						sessionInfo.session_id=session_id
 						workspace.append_session(sessionInfo)
 					if "archived" in key and key["archived"]:
 						sessionInfo.archived = True
@@ -697,6 +699,10 @@ def read_transcripts_jsonl(session_info: SessionInfo, jsonl_file: Path):
 		session_info (SessionInfo): セッション情報を格納するオブジェクト
 		jsonl_file (Path): 読み取るJSONLファイルのパス
 	"""
+	if not jsonl_file.exists():
+		g_log_file.write(f"Transcript file does not exist: {jsonl_file}\n")
+		return
+
 	g_log_file.write(f"--------------------------------------------------------- Reading from transcript file: {jsonl_file} ---------------------------------------------------------\n")
 	with jsonl_file.open("r", encoding="utf-8") as f:
 		for line in f:
