@@ -134,10 +134,22 @@ class ChatSessionMessage:
 		self.children: list[ChatSessionMessage] = []
 		self.parent: ChatSessionMessage = None
 
+class ChatSessionToolInvocationMessage:
+	def __init__(self) -> None:
+		self.toolCallId: str = ""
+		self.tool_id: str = ""
+		self.isConfirmed: str = ""
+		self.isComplete: str = ""
+		self.invocationMessage: str = ""
+		self.pastTenseMessage: str = ""
+		self.resultDetails: dict[str, Any] = {}
+		self.toolSpecificData: dict[str, Any] = {}
+
 class ChatSessionResponseMessage:
 	def __init__(self) -> None:
 		self.kind = ""
 		self.response = ""
+		self.tool_invocation: ChatSessionToolInvocationMessage = ChatSessionToolInvocationMessage()
 
 class ChatSessionRequestAndResponse:
 	def __init__(self) -> None:
@@ -274,6 +286,30 @@ class SessionInfo:
 
 		return result_details_model, result_details_credit
 
+	def parse_tool_invocation_message(self, message: ChatSessionMessage) -> ChatSessionToolInvocationMessage:
+		tool_invocation_message = ChatSessionToolInvocationMessage()
+		tool_invocation_message.toolCallId = get_key_value_from_descendants(message, ["toolCallId"], "")
+		tool_invocation_message.tool_id = get_key_value_from_descendants(message, ["toolId"], "")
+		tool_invocation_message.isConfirmed = get_key_value_from_descendants(message, ["isConfirmed", "type"], "")
+		tool_invocation_message.isComplete = get_key_value_from_descendants(message, ["isComplete"], "")
+
+		invocationMessage = get_key_value_from_descendants(message, ["invocationMessage"], "")
+		if type(invocationMessage) is str:
+			tool_invocation_message.invocationMessage = invocationMessage
+		else:
+			tool_invocation_message.invocationMessage = get_key_value_from_descendants(message, ["invocationMessage", "value"], "")
+
+		pastTenseMessage = get_key_value_from_descendants(message, ["pastTenseMessage"], "")
+		if type(pastTenseMessage) is str:
+			tool_invocation_message.pastTenseMessage = pastTenseMessage
+		else:
+			tool_invocation_message.pastTenseMessage = get_key_value_from_descendants(message, ["pastTenseMessage", "value"], "")
+
+		tool_invocation_message.resultDetails = find_key_from_descendants(message, ["resultDetails"]) or {}
+		tool_invocation_message.toolSpecificData = find_key_from_descendants(message, ["toolSpecificData"]) or {}
+		return tool_invocation_message
+
+
 	def parse_response_message(self, message: ChatSessionMessage, index: int) -> ChatSessionResponseMessage:
 		"""
 		レスポンスメッセージを解析する
@@ -305,10 +341,10 @@ class SessionInfo:
 			elif kind == "questionCarousel":
 				pass
 			elif kind == "toolInvocationSerialized":
-				toolCallId = get_key_value_from_descendants(message, ["toolCallId"], "")
-				tool_id = get_key_value_from_descendants(message, ["toolId"], "")
-				g_log_file.write(f"Tool invocation: toolCallId={toolCallId}, tool_id={tool_id}\n") if g_log_file else None
-				pass
+				res_msg = ChatSessionResponseMessage()
+				res_msg.kind = "toolInvocationSerialized"
+				res_msg.tool_invocation = self.parse_tool_invocation_message(message)
+				return res_msg
 			elif kind == "inlineReference":
 				name = get_key_value_from_descendants(message, ["name"], "")
 				res_msg = ChatSessionResponseMessage()
@@ -961,6 +997,53 @@ def parse_chat_session_msg(chat_msg : ChatSessionMessage, session_info : Session
 def escape_markdown_table_text(text: Any) -> str:
 	return str(text).replace("|", r"\|")
 
+def write_tool_detail_value(detail_file, label: str, value: Any, indent: int = 0) -> None:
+	prefix = "  " * indent
+	if isinstance(value, ChatSessionMessage):
+		if value.children:
+			detail_file.write(f"{prefix}- {label or value.key}\n")
+			for child in value.children:
+				write_tool_detail_value(detail_file, child.key, child, indent + 1)
+		else:
+			detail_file.write(f"{prefix}- {label or value.key}: {value.value}\n")
+	elif isinstance(value, dict):
+		if value:
+			detail_file.write(f"{prefix}- {label}\n")
+			for child_label, child_value in value.items():
+				write_tool_detail_value(detail_file, str(child_label), child_value, indent + 1)
+		else:
+			detail_file.write(f"{prefix}- {label}: {{}}\n")
+	else:
+		detail_file.write(f"{prefix}- {label}: {value}\n")
+
+def output_tool_detail_file(
+	detail_dir: Path,
+	request_index: int,
+	tool_invocations: list[ChatSessionToolInvocationMessage],
+) -> str:
+	tool_file_name = f"tool_{request_index:03d}.md"
+	tool_path = detail_dir / tool_file_name
+	with tool_path.open("w", encoding="utf-8") as tool_file:
+		tool_file.write(f"# Tool Invocations for Request {request_index}\n\n")
+		if not tool_invocations:
+			tool_file.write("このリクエストにツール呼び出しはありません。\n")
+		else:
+			for tool_index, tool_invocation in enumerate(tool_invocations, start=1):
+				if tool_index > 1:
+					tool_file.write("\n---\n\n")
+				tool_file.write(f"## Tool[{tool_index}]:{tool_invocation.tool_id}\n\n")
+				write_tool_detail_value(tool_file, "Tool call ID", tool_invocation.toolCallId)
+#				write_tool_detail_value(tool_file, "Tool ID", tool_invocation.tool_id)
+				write_tool_detail_value(tool_file, "Invocation", tool_invocation.invocationMessage)
+				write_tool_detail_value(tool_file, "Past tense", tool_invocation.pastTenseMessage)
+				write_tool_detail_value(tool_file, "Confirmed", tool_invocation.isConfirmed)
+				write_tool_detail_value(tool_file, "Complete", tool_invocation.isComplete)
+				tool_file.write("\n### Result details\n\n")
+				write_tool_detail_value(tool_file, "Result details", tool_invocation.resultDetails)
+				tool_file.write("\n### Tool-specific data\n\n")
+				write_tool_detail_value(tool_file, "Tool-specific data", tool_invocation.toolSpecificData)
+	return f"[ツール詳細](./{tool_file_name})"
+
 def output_detail_file(
 	detail_dir: Path,
 	session_number: int,
@@ -970,9 +1053,17 @@ def output_detail_file(
 ) -> str:
 	detail_file_name = f"detail_{request_index:03d}.md"
 	detail_path = detail_dir / detail_file_name
+	tool_invocations = [
+		response_msg.tool_invocation
+		for response_msg in req_res.response_msgs
+		if response_msg.kind == "toolInvocationSerialized"
+	]
+	tool_link = output_tool_detail_file(detail_dir, request_index, tool_invocations) if tool_invocations else None
 	with detail_path.open("w", encoding="utf-8") as detail_file:
 		detail_file.write(f"[戻る](../セッションログ.md#session-{session_number})\n\n")
 		detail_file.write(f"# Request {request_index}\n\n")
+		if tool_link:
+			detail_file.write(f"{tool_link}\n\n")
 		detail_file.write(f"- 開始日時: {timestamp_to_str(req_res.start_time)}\n")
 		detail_file.write(f"- 完了日時: {timestamp_to_str(req_res.completed_at)}\n")
 		detail_file.write(f"- 経過時間: {elapsed_ms_str} sec\n")
@@ -984,13 +1075,33 @@ def output_detail_file(
 		detail_file.write("## Request\n\n")
 		detail_file.write(f"{req_res.message_text}\n\n")
 		detail_file.write("## Response\n\n")
-		for response_msg in req_res.response_msgs:
+		response_index = 0
+		tool_index = 1
+		while response_index < len(req_res.response_msgs):
+			response_msg = req_res.response_msgs[response_index]
+			if response_msg.kind == "toolInvocationSerialized":
+				tool_call_count = 1
+				while (
+					response_index + tool_call_count < len(req_res.response_msgs)
+					and req_res.response_msgs[response_index + tool_call_count].kind == "toolInvocationSerialized"
+				):
+					tool_call_count += 1
+				tool_call_text = "ツール呼び出し" if tool_call_count == 1 else f"ツール呼び出し{tool_call_count}回"
+				tool_anchor = f"#tool-invocation-{tool_index}"
+				detail_file.write(
+					f"<br>**[{tool_call_text}](./tool_{request_index:03d}.md{tool_anchor})**<br><br>"
+				)
+				response_index += tool_call_count
+				tool_index += tool_call_count
+				continue
+
 			if req_res.final_answer is not None:
 				# responseがfinal_answerの先頭と一致した場合、以降のmessageは出力しない
 				if req_res.final_answer.startswith(response_msg.response):
 					break
 
 			detail_file.write(f"{response_msg.response}<br>")
+			response_index += 1
 
 		detail_file.write("\n")
 		if req_res.final_answer is not None:
