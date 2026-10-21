@@ -694,6 +694,14 @@ def read_chat_sessions_jsonl(session_info: SessionInfo, jsonl_file: Path):
 		session_info (SessionInfo): セッション情報を格納するオブジェクト
 		jsonl_file (Path): 読み取るJSONLファイルのパス
 	"""
+	if not jsonl_file.exists():
+		g_log_file.write(f"Chat session file does not exist: {jsonl_file}\n")
+		return
+
+	if not jsonl_file.is_file():
+		g_log_file.write(f"Chat session file is not a valid file: {jsonl_file}\n")
+		return
+
 	g_log_file.write(f"--------------------------------------------------------- Reading from chat session file: {jsonl_file} ---------------------------------------------------------\n")
 	with jsonl_file.open("r", encoding="utf-8") as f:
 		for line in f:
@@ -737,6 +745,10 @@ def read_transcripts_jsonl(session_info: SessionInfo, jsonl_file: Path):
 	"""
 	if not jsonl_file.exists():
 		g_log_file.write(f"Transcript file does not exist: {jsonl_file}\n")
+		return
+
+	if not jsonl_file.is_file():
+		g_log_file.write(f"Transcript file is not a valid file: {jsonl_file}\n")
 		return
 
 	g_log_file.write(f"--------------------------------------------------------- Reading from transcript file: {jsonl_file} ---------------------------------------------------------\n")
@@ -983,7 +995,7 @@ def parse_chat_session_msg(chat_msg : ChatSessionMessage, session_info : Session
 					req_res.completed_at = get_key_value_from_descendants(chat_msg, ["completedAt"], "0")
 					g_log_file.write(f"Request completed at: {timestamp_to_str(req_res.completed_at)}\n") if g_log_file else None
 
-	elif chat_msg.key == ['requests']:
+	elif chat_msg.key == ['requests'] or chat_msg.key == 'requests':
 		for child_msg in chat_msg.children:
 			session_info.parse_new_request(child_msg)
 
@@ -1024,7 +1036,7 @@ def output_tool_detail_file(
 	tool_file_name = f"tool_{request_index:03d}.md"
 	tool_path = detail_dir / tool_file_name
 	with tool_path.open("w", encoding="utf-8") as tool_file:
-		tool_file.write(f"# Tool Invocations for Request {request_index}\n\n")
+		tool_file.write(f"# ツール呼び出し for Request {request_index}\n\n")
 		if not tool_invocations:
 			tool_file.write("このリクエストにツール呼び出しはありません。\n")
 		else:
@@ -1113,15 +1125,17 @@ def output_detail_file(
 def output_workspace_summary(workspace: WorkspaceInfo, output_dir: Path, time_stamp: str) -> None:
 	"""
 	ワークスペースのサマリー情報を出力する
+	セッションは作成日時の古い順（作成日時がないものは最後）で出力する
 	Args:
 		workspace (WorkspaceInfo): ワークスペース情報のオブジェクト
 	"""
 #	summary_file = open(output_dir / f"セッションログ_{time_stamp}.md", "w", encoding="utf-8")
 	summary_file = open(output_dir / f"セッションログ.md", "w", encoding="utf-8")
+	sessions = sorted(workspace.sessions, key=lambda session: (not session.creationDate, session.creationDate))
 	summary_file.write(f"# WorkSpace\n  Path: {workspace.workspace_dir}<br>  Id: {workspace.workspace_id}\n")
 	summary_file.write(f"# Sessions\n| No. | Id | 作成日時 | タイトル | アーカイブ状態 |\n")
 	summary_file.write(f"| --- | --- | --- | --- | --- |\n")
-	for i, session in enumerate(workspace.sessions):
+	for i, session in enumerate(sessions):
 		if session.archived:
 			summary_file.write(
 				f"| {i+1} | {escape_markdown_table_text(session.session_id)} | "
@@ -1140,7 +1154,7 @@ def output_workspace_summary(workspace: WorkspaceInfo, output_dir: Path, time_st
 	summary_file.write("\n\n")
 
 	# 各セッションの詳細情報を出力
-	for i, session in enumerate(workspace.sessions):
+	for i, session in enumerate(sessions):
 		if session.title is None:
 			g_log_file.write(f"Skipping session with no title: session_id={session.session_id}\n")
 			continue
